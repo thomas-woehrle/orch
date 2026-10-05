@@ -45,8 +45,6 @@ def _upstream_ready(job: dict) -> tuple[bool, str]:
 
 
 def execute(run_dir: Path) -> int:
-    import wandb
-
     job = read_job(run_dir)
     ready, state = _upstream_ready(job)
     if not ready:
@@ -85,7 +83,7 @@ def execute(run_dir: Path) -> int:
                 sys.path.insert(0, src)
             metrics = _parser(job["parser"])(run_dir / "output")
             finite_metrics(metrics)
-            wandb.log({f"{stem}/{key}": float(value) for key, value in metrics.items()})
+            run.log({f"{stem}/{key}": float(value) for key, value in metrics.items()})
             update_config(run, job, state="succeeded", extra={"model": model_meta})
         else:
             run.tags = list(run.tags) + ["failed"]

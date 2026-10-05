@@ -187,8 +187,6 @@ def update_config(run, job: dict[str, Any], *, state: str | None, extra: dict[st
 
 
 def save_files(run, run_dir: Path, extra: list[Path] | None = None) -> None:
-    import wandb
-
     names = [
         "job.sh",
         "job.json",
@@ -207,7 +205,7 @@ def save_files(run, run_dir: Path, extra: list[Path] | None = None) -> None:
             paths.append(path)
     for path in paths:
         if path.is_file():
-            wandb.save(str(path), base_path=str(run_dir), policy="now")
+            run.save(str(path), base_path=str(run_dir), policy="now")
 
 
 def finite_metrics(values: dict[str, float]) -> None:
