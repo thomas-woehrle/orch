@@ -261,17 +261,17 @@ def tag(
 
 @app.command()
 def cancel(
-    run_ids: Annotated[list[str], typer.Argument(help="Run ids to qdel. A W&B run is tagged cancelled when it exists.")],
+    run_ids: Annotated[list[str], typer.Argument(help="Run ids (fingerprint-aN) to qdel. A W&B run is tagged cancelled when it exists.")],
 ) -> None:
     """Delete scheduler jobs and tag the W&B runs cancelled."""
     from orch.ops import cancel_runs, repo
 
     try:
-        cancel_runs(repo(), run_ids)
+        lines = cancel_runs(repo(), run_ids)
     except OrchError as exc:
         _fail(exc)
-    for run_id in run_ids:
-        typer.echo(run_id)
+    for line in lines:
+        typer.echo(line)
 
 
 @cluster_app.command("check")

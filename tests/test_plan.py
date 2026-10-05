@@ -40,22 +40,63 @@ def _build(root: Path, target: str, **kwargs):
     )
 
 
-def test_tooluse_main_expands_to_eleven_submits():
+def test_tooluse_main_expands_ablation_grid():
     root = Path(__file__).resolve().parents[1]
     jobs = _build(root, "experiments/tooluse_main.yaml")
-    assert len(jobs) == 11
     trains = [job for job in jobs if job.kind == "train"]
     evals = [job for job in jobs if job.kind == "eval"]
-    assert len(trains) == 3
-    assert len(evals) == 8
+    # 2 methods x 2 learning rates x 2 batch sizes on Qwen2.5-3B-Instruct,
+    # plus the same SDFT grid with an alternate teacher prompt. Each training
+    # run has two held evals, and there are two base-model evals.
+    assert len(trains) == 12
+    assert len(evals) == 26
+    assert len(jobs) == 38
     assert all(job.decision == "submit" and job.attempt == 1 for job in jobs)
-    sdft = next(job for job in trains if job.spec_path.endswith("sdft_tooluse.yaml"))
-    children = [job for job in evals if job.upstream_run_id == sdft.run_id]
-    assert len(children) == 2
-    assert {job.stem for job in children} == {"tooluse", "prior_tasks"}
-    base = [job for job in evals if job.model_ref == "hf:Qwen/Qwen2.5-1.5B-Instruct"]
+    grid = {
+        (
+            job.params["method"],
+            job.params["model_name"],
+            job.params["learning_rate"],
+            job.params["gradient_accumulation_steps"],
+        )
+        for job in trains
+    }
+    assert grid == {
+        (method, "Qwen/Qwen2.5-3B-Instruct", lr, batch)
+        for method in ("sdft", "sft")
+        for lr in (1.0e-5, 5.0e-5)
+        for batch in (16, 32)
+    }
+    alternate_prompt = (
+        "{prompt}\n"
+        "This is an example for a response to the question:\n"
+        "{privileged_context}\n"
+        "\n"
+        "Now answer with a response of your own. The first words of your response are filled out by another, less capable agent"
+    )
+    sdft = [job for job in trains if job.params["method"] == "sdft"]
+    alternate = [job for job in sdft if job.params["teacher_prompt_template"] == alternate_prompt]
+    paper = [job for job in sdft if job.params["teacher_prompt_template"] != alternate_prompt]
+    cells = {
+        (1.0e-5, 16),
+        (1.0e-5, 32),
+        (5.0e-5, 16),
+        (5.0e-5, 32),
+    }
+    assert {
+        (job.params["learning_rate"], job.params["gradient_accumulation_steps"]) for job in alternate
+    } == cells
+    assert {
+        (job.params["learning_rate"], job.params["gradient_accumulation_steps"]) for job in paper
+    } == cells
+    assert all("teacher_prompt_template" not in job.params for job in trains if job.params["method"] == "sft")
+    for train in trains:
+        children = [job for job in evals if job.upstream_run_id == train.run_id]
+        assert len(children) == 2
+        assert {job.stem for job in children} == {"tooluse", "prior_tasks"}
+    base = [job for job in evals if job.upstream_run_id is None]
+    assert {job.model_ref for job in base} == {"hf:Qwen/Qwen2.5-3B-Instruct"}
     assert len(base) == 2
-    assert all(job.upstream_run_id is None for job in base)
 
 
 def test_dedup_unions_evals(tmp_path: Path):

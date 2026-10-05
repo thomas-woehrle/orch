@@ -177,34 +177,87 @@ def edit_tags(repo: Path, targets: list[str], *, add: list[str], remove: list[st
     return changed
 
 
-def cancel_runs(repo: Path, run_ids: list[str]) -> None:
+def scheduler_miss(run_id: str, cache: Cache) -> str:
+    """Why this argument cannot be passed to qdel."""
+    attempts = cache.for_fingerprint(run_id)
+    if attempts:
+        shown = ", ".join(
+            f"{run_id}-a{entry.attempt} (scheduler {entry.scheduler_id})" for entry in attempts
+        )
+        return f"fingerprint, not a run id. Pass {shown}"
+    return "no scheduler job in the local cache"
+
+
+def cancel_summaries(
+    run_ids: list[str],
+    cache: Cache,
+    *,
+    deleted: dict[str, str],
+    tagged: set[str],
+    wandb_missing: set[str],
+) -> list[str]:
+    """One line per argument. Raise when no scheduler job was deleted and no run was tagged."""
+    lines: list[str] = []
+    acted = False
+    for run_id in run_ids:
+        parts: list[str] = []
+        if run_id in deleted:
+            parts.append(f"qdel {deleted[run_id]}")
+            acted = True
+        else:
+            parts.append(scheduler_miss(run_id, cache))
+        if run_id in tagged:
+            parts.append("tagged cancelled")
+            acted = True
+        elif run_id in wandb_missing:
+            parts.append("no W&B run")
+        lines.append(f"{run_id}: " + "; ".join(parts))
+    if not acted:
+        raise UsageError("\n".join(lines))
+    return lines
+
+
+def cancel_runs(repo: Path, run_ids: list[str]) -> list[str]:
     local = load_local(repo)
     cache = Cache.load(local.wandb.entity, local.wandb.project)
     lookup = WandbLookup(local.wandb.entity, local.wandb.project)
     from orch.backends.sge import SGEBackend
     from orch.ssh import SSH
 
-    by_cluster: dict[str, list[str]] = {}
+    deleted: dict[str, str] = {}
+    by_cluster: dict[str, list[tuple[str, str]]] = {}
     for run_id in run_ids:
         cached = cache.by_run_id(run_id)
         if cached is None:
             continue
-        by_cluster.setdefault(cached.cluster, []).append(cached.scheduler_id)
+        by_cluster.setdefault(cached.cluster, []).append((run_id, cached.scheduler_id))
     backend = SGEBackend()
-    for cluster_name, ids in by_cluster.items():
+    for cluster_name, jobs in by_cluster.items():
         cluster = select_cluster(local, cluster_name)
         with SSH(cluster.ssh, cluster.password_env) as conn:
-            for scheduler_id in ids:
+            for run_id, scheduler_id in jobs:
                 backend.cancel(conn, scheduler_id)
+                deleted[run_id] = scheduler_id
+    tagged: set[str] = set()
+    wandb_missing: set[str] = set()
     for run_id in run_ids:
         run = lookup.run(run_id)
         if run is None:
+            wandb_missing.add(run_id)
             continue
         tags = list(run.tags)
         if "cancelled" not in tags:
             tags.append("cancelled")
         run.tags = tags
         run.update()
+        tagged.add(run_id)
+    return cancel_summaries(
+        run_ids,
+        cache,
+        deleted=deleted,
+        tagged=tagged,
+        wandb_missing=wandb_missing,
+    )
 
 
 def repo() -> Path:
