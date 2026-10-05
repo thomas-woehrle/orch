@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import threading
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -206,6 +207,26 @@ def save_files(run, run_dir: Path, extra: list[Path] | None = None) -> None:
     for path in paths:
         if path.is_file():
             run.save(str(path), base_path=str(run_dir), policy="now")
+
+
+def write_failure(run_dir: Path, exc: BaseException) -> None:
+    """Print a wrapper failure and append it to ``stderr.log``.
+
+    The eval script's own streams are already closed. This is the text that
+    shows up in ``orch logs --which stderr``, ``sge.err``, and the W&B console.
+    """
+    text = "".join(traceback.format_exception(exc))
+    if not text.endswith("\n"):
+        text += "\n"
+    sys.stderr.write(text)
+    sys.stderr.flush()
+    # wandb may have replaced sys.stderr. The original stream is what SGE records.
+    original = sys.__stderr__
+    if original is not None and original is not sys.stderr:
+        original.write(text)
+        original.flush()
+    with (run_dir / "stderr.log").open("a") as handle:
+        handle.write(text)
 
 
 def finite_metrics(values: dict[str, float]) -> None:

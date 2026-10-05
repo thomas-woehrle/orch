@@ -42,6 +42,8 @@ def format_report(rows: list[dict], *, as_json: bool) -> str:
         "reason",
         "fingerprint",
         "scheduler_id",
+        "scheduler_state",
+        "wandb_state",
         "dependency",
     ]
     widths = {key: len(key) for key in headers}

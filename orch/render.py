@@ -242,6 +242,7 @@ def job_document(
         },
         "git": {"sha": sha, "remote": remote},
         "command": job.command,
+        "parser": job.parser,
         "env": env,
         "submitted_from": submitted_from,
         "submitted_at": submitted_at,

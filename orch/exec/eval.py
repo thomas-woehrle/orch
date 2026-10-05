@@ -16,6 +16,7 @@ from orch.exec.common import (
     save_files,
     tee_subprocess,
     update_config,
+    write_failure,
 )
 from orch.exec.models import resolve_model
 
@@ -93,6 +94,7 @@ def execute(run_dir: Path) -> int:
         save_files(run, run_dir, extra=[run_dir / "output"])
         run.finish(exit_code=code)
     except Exception as exc:
+        write_failure(run_dir, exc)
         run.tags = list(getattr(run, "tags", []) or []) + ["failed"]
         run.summary["orch/exit_code"] = code
         run.summary["orch/failure_reason"] = f"parser:{exc}"

@@ -6,7 +6,7 @@ from pathlib import Path
 from orch.backends.sge import SGEBackend
 from orch.cache import Cache
 from orch.config import Cluster, load_orch
-from orch.driver import submit_jobs
+from orch.driver import format_report, submit_jobs
 from orch.plan import build_jobs
 from orch.ssh import Result
 
@@ -94,9 +94,11 @@ def test_submit_trains_before_evals_and_holds():
     document = json.loads(conn.files[f"/work/{train_id}/job.json"])
     assert document["git"]["sha"] == "abc123"
     assert document["command"].startswith("python train.py --config ")
+    assert document["parser"] is None
     eval_paths = [path for path in conn.files if path.endswith("job.json") and train_id not in path]
     eval_job = json.loads(conn.files[eval_paths[0]])
     assert "{model_path}" in eval_job["command"]
+    assert eval_job["parser"] == "orch_adapters:parse_eval_results"
     assert eval_job["upstream_run_id"].endswith("-a1")
 
 
@@ -132,3 +134,26 @@ def test_ledger_bumps_attempt_when_run_dir_exists():
     assert jobs[0].attempt == 2
     assert jobs[0].run_id.endswith("-a2")
     assert "/work/" + jobs[0].run_id + "/job.sh" in conn.files
+
+
+def test_status_table_prints_wandb_and_scheduler_state():
+    text = format_report(
+        [
+            {
+                "run_id": "8ccecc186654-a1",
+                "run_name": "sft",
+                "kind": "train",
+                "decision": None,
+                "reason": None,
+                "fingerprint": "8ccecc186654",
+                "scheduler_id": "59290197",
+                "scheduler_state": "gone",
+                "wandb_state": "failed",
+                "dependency": None,
+            }
+        ],
+        as_json=False,
+    )
+    header, row = text.splitlines()[:2]
+    assert "scheduler_state" in header and "wandb_state" in header
+    assert "gone" in row and "failed" in row

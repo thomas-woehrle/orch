@@ -741,6 +741,7 @@ scheduler ID>`when the upstream was submitted in this invocation or is in the ca
     "remote": "https://github.com/thomas-woehrle/sdft-exp.git"
   },
   "command": "python train.py --config /exports/.../3f9a2c1d7e4b-a1/params.yaml",
+  "parser": null,
   "env": {
     "...": "merged cluster env, entry env, ORCH_* and WANDB_* variables"
   },
