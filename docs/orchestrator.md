@@ -442,6 +442,7 @@ runtime_keys: [batch_size]
 params:
   tasks: hellaswag,mmlu,truthfulqa,winogrande,humaneval,ifeval
   batch_size: auto
+  apply_chat_template: true
 resources: { gpus: 1, time: "06:00:00", mem: 32G }
 ```
 
