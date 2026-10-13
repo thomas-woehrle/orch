@@ -13,6 +13,10 @@ from orch.render import _jinja, render_job_body, shquote
 from orch.render import CANONICAL_RESOURCE_KEYS
 
 HEAD = """#!/bin/bash
+# orch run starts a wandb service while it plans. tmux would otherwise hand
+# that socket to the job, and the job dies when orch exits and takes the
+# socket with it.
+unset WANDB_SERVICE
 exec >>{{ run_dir }}/scheduler.out 2>>{{ run_dir }}/scheduler.err
 export ORCH_JOB_ID={{ name }}
 echo held > {{ run_dir }}/state

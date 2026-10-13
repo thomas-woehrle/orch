@@ -92,6 +92,7 @@ def test_job_sh_holds_and_pinned_device():
         ["orch_train_a1"],
     )
     assert script.startswith("#!/bin/bash\n")
+    assert "unset WANDB_SERVICE\n" in script
     assert "while tmux has-session -t orch_train_a1" in script
     assert "orch.backends.local claim /work 0,1,2,3 $ORCH_JOB_ID" in script
     assert "export ORCH_JOB_ID=orch_3f9a2c1d7e4b_a1" in script
