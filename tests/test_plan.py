@@ -9,7 +9,7 @@ from orch.plan import build_jobs
 HEADER = """#$ -q gpu
 #$ -l gpu={{ gpus }}
 {% if gpu_type %}#$ -l {{ gpu_type }}=true{% endif %}
-#$ -l h_rt={{ h_rt }}
+#$ -l h_rt={{ time }}
 #$ -l h_rss={{ mem }}
 """
 

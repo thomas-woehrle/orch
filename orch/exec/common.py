@@ -19,7 +19,13 @@ from orch.render import utc_now
 
 
 def read_job(run_dir: Path) -> dict[str, Any]:
-    return json.loads((run_dir / "job.json").read_text())
+    job = json.loads((run_dir / "job.json").read_text())
+    version = job.get("schema_version", 1)
+    if version not in (1, 2):
+        raise RuntimeError(f"unsupported job.json schema_version {version}")
+    cluster = job.setdefault("cluster", {})
+    cluster.setdefault("job_id_env", "JOB_ID")
+    return job
 
 
 def write_job(run_dir: Path, job: dict[str, Any]) -> None:
@@ -123,7 +129,7 @@ def init_run(job: dict[str, Any], run_dir: Path):
 
 def orch_config(job: dict[str, Any], *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     block = {
-        "schema_version": 1,
+        "schema_version": 2,
         "orch_version": job.get("orch_version"),
         "fingerprint": job["fingerprint"],
         "fingerprint_version": job["fingerprint_version"],
@@ -137,14 +143,17 @@ def orch_config(job: dict[str, Any], *, extra: dict[str, Any] | None = None) -> 
         "runtime_keys": job.get("spec", {}).get("runtime_keys", []),
         "resources": job.get("spec", {}).get("resources", {}),
         "evals": job.get("spec", {}).get("evals", []),
+        "env": job.get("spec", {}).get("env", {}),
         "overrides": job.get("overrides", []),
         "model_ref": job.get("model_ref"),
         "upstream_run_id": job.get("upstream_run_id"),
         "cluster": {
             key: job.get("cluster", {}).get(key)
-            for key in ("name", "backend", "repo_dir", "work_dir", "src_dir")
+            for key in ("name", "backend", "repo_dir", "work_dir", "src_dir", "device")
         },
-        "scheduler_id": os.environ.get("JOB_ID"),
+        "scheduler_id": os.environ.get(
+            (job.get("cluster") or {}).get("job_id_env") or "JOB_ID"
+        ),
         "git": job.get("git"),
         "submitted_from": job.get("submitted_from"),
         "submitted_at": job.get("submitted_at"),
@@ -163,13 +172,21 @@ def flat_keys(job: dict[str, Any], *, state: str | None = None) -> dict[str, Any
         "orch_kind": job["kind"],
         "orch_entry": job["entry"],
         "orch_spec": Path(job["spec_path"]).stem,
+        "orch_cluster": (job.get("cluster") or {}).get("name"),
         "orch_model_ref": job.get("model_ref"),
         "orch_upstream_run_id": job.get("upstream_run_id"),
         "orch_state": state,
     }
 
 
-def update_config(run, job: dict[str, Any], *, state: str | None, extra: dict[str, Any] | None = None) -> None:
+def update_config(
+    run,
+    job: dict[str, Any],
+    *,
+    state: str | None,
+    extra: dict[str, Any] | None = None,
+    top_extra: dict[str, Any] | None = None,
+) -> None:
     # fingerprint input lives in fingerprint.json, which is the canonical record.
     # The job document does not duplicate it, so read the file when present.
     run_dir = Path(job["env"]["ORCH_RUN_DIR"])
@@ -177,14 +194,18 @@ def update_config(run, job: dict[str, Any], *, state: str | None, extra: dict[st
     if fp_path.is_file() and "fingerprint_input" not in job:
         job = dict(job)
         job["fingerprint_input"] = json.loads(fp_path.read_text())["input"]
-    run.config.update(
-        {
-            "params": job.get("spec", {}).get("params", {}),
-            "orch": orch_config(job, extra=extra),
-            **flat_keys(job, state=state),
-        },
-        allow_val_change=True,
-    )
+    orch_extra = dict(extra or {})
+    existing = run.config.get("orch") if run.config is not None else None
+    if isinstance(existing, dict) and existing.get("started_at") and "started_at" not in orch_extra:
+        orch_extra["started_at"] = existing["started_at"]
+    payload = {
+        "params": job.get("spec", {}).get("params", {}),
+        "orch": orch_config(job, extra=orch_extra),
+        **flat_keys(job, state=state),
+    }
+    if top_extra:
+        payload.update(top_extra)
+    run.config.update(payload, allow_val_change=True)
 
 
 def save_files(run, run_dir: Path, extra: list[Path] | None = None) -> None:
@@ -195,6 +216,8 @@ def save_files(run, run_dir: Path, extra: list[Path] | None = None) -> None:
         "fingerprint.json",
         "stdout.log",
         "stderr.log",
+        "scheduler.out",
+        "scheduler.err",
         "sge.out",
         "sge.err",
     ]

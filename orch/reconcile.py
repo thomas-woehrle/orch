@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from orch.cache import CacheEntry
+
+# ``None`` means that cluster was not queried (a dry run). Absence of an id in
+# the map means the scheduler has forgotten the job.
+SchedulerStates = Callable[[str], dict[str, str] | None]
 
 
 @dataclass(frozen=True)
@@ -52,19 +57,21 @@ def decide(attempts: list[AttemptView], *, force: bool = False) -> Decision:
 def attempt_views(
     wb_attempts: dict[int, str],
     cache_entries: list[CacheEntry],
-    qstat: dict[str, str] | None,
+    states: SchedulerStates,
 ) -> list[AttemptView]:
     """Combine a W&B probe with cache entries.
 
-    ``qstat is None`` means the scheduler was not queried (dry-run): cached
-    jobs are ``unknown``, which the table treats as still pending.
+    ``states(cluster) is None`` means that cluster was not queried (dry-run):
+    its cached jobs are ``unknown``, which the table treats as still pending.
+    Each cache entry is looked up on the cluster it was submitted to.
     """
     sched_by_attempt: dict[int, str] = {}
     for entry in cache_entries:
-        if qstat is None:
+        mapping = states(entry.cluster)
+        if mapping is None:
             sched_by_attempt[entry.attempt] = "unknown"
         else:
-            sched_by_attempt[entry.attempt] = qstat.get(entry.scheduler_id, "gone")
+            sched_by_attempt[entry.attempt] = mapping.get(entry.scheduler_id, "gone")
     numbers = set(wb_attempts) | set(sched_by_attempt)
     return [
         AttemptView(number, wb_attempts.get(number), sched_by_attempt.get(number))

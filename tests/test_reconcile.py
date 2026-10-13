@@ -45,11 +45,11 @@ def test_attempt_views_dry_run_treats_cache_as_unknown():
     cache = [
         CacheEntry("eddie", "10", "abc", 1, "train", "name", "2026-01-01T00:00:00Z")
     ]
-    views = attempt_views({}, cache, qstat=None)
+    views = attempt_views({}, cache, lambda _name: None)
     assert views == [AttemptView(1, None, "unknown")]
     assert decide(views).reason == "pending"
 
-    views = attempt_views({}, cache, qstat={})
+    views = attempt_views({}, cache, lambda _name: {})
     assert views[0].scheduler_state == "gone"
     assert decide(views).reason == "burned"
 

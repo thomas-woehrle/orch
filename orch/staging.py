@@ -8,21 +8,24 @@ from pathlib import Path
 from orch.cache import Cache
 from orch.config import Cluster
 from orch.errors import PreconditionError
+from orch.render import shquote
 
+# The body is a quoted heredoc so pattern quotes survive and the inner shell
+# expands $lock_hash itself. See docs/orchestrator.md §6.3.
 _SCRIPT = """
 cd __REPO_DIR__
-flock .orch-staging.lock bash -c '
-  git fetch --quiet origin
-  git cat-file -e __SHA__^{commit}
-  [ -d .worktrees/__SHA__ ] || git worktree add --detach .worktrees/__SHA__ __SHA__
-  cd .worktrees/__SHA__
-  export UV_PROJECT_ENVIRONMENT=__REPO_DIR__/.venv
-  lock_hash=$(sha256sum uv.lock | cut -c1-16)
-  if [ "$(cat __REPO_DIR__/.venv/.orch-lock-hash 2>/dev/null)" != "$lock_hash" ]; then
-    uv sync --frozen
-    echo "$lock_hash" > __REPO_DIR__/.venv/.orch-lock-hash
-  fi
-'
+flock .orch-staging.lock bash <<'ORCH_STAGE'
+git fetch --quiet origin
+git cat-file -e __SHA__^{commit}
+__WORKTREE__
+cd .worktrees/__SHA__
+export UV_PROJECT_ENVIRONMENT=__REPO_DIR__/.venv
+lock_hash=$(sha256sum uv.lock | cut -c1-16)
+if [ "$(cat __REPO_DIR__/.venv/.orch-lock-hash 2>/dev/null)" != "$lock_hash" ]; then
+  uv sync --frozen
+  echo "$lock_hash" > __REPO_DIR__/.venv/.orch-lock-hash
+fi
+ORCH_STAGE
 """
 
 
@@ -59,8 +62,29 @@ def active_job_names(cache: Cache, cluster_name: str, qstat: dict[str, str] | No
     return names
 
 
-def staging_command(repo_dir: str, sha: str) -> str:
-    return _SCRIPT.replace("__REPO_DIR__", repo_dir).replace("__SHA__", sha)
+def staging_command(
+    repo_dir: str, sha: str, orchignore_lines: list[str] | None = None
+) -> str:
+    if orchignore_lines:
+        patterns = " ".join(
+            shquote(item) for item in ["/*", *(f"!{line}" for line in orchignore_lines)]
+        )
+        worktree = (
+            f"if [ ! -d .worktrees/{sha} ]; then\n"
+            f"  git worktree add --detach --no-checkout .worktrees/{sha} {sha}\n"
+            f"  git -C .worktrees/{sha} sparse-checkout set --no-cone {patterns}\n"
+            f"  git -C .worktrees/{sha} checkout --quiet {sha}\n"
+            f"fi\n"
+        )
+    else:
+        worktree = (
+            f"[ -d .worktrees/{sha} ] || git worktree add --detach .worktrees/{sha} {sha}\n"
+        )
+    return (
+        _SCRIPT.replace("__REPO_DIR__", repo_dir)
+        .replace("__SHA__", sha)
+        .replace("__WORKTREE__\n", worktree)
+    )
 
 
 def stage(
@@ -72,6 +96,7 @@ def stage(
     cache: Cache,
     qstat: dict[str, str] | None,
     resync: bool,
+    orchignore_lines: list[str] | None = None,
 ) -> None:
     local = lock_hash(repo_root)
     remote = conn.run(
@@ -85,4 +110,4 @@ def stage(
         active_names=active_job_names(cache, cluster.name, qstat),
         resync=resync,
     )
-    conn.run(staging_command(cluster.repo_dir, sha), stream=True)
+    conn.run(staging_command(cluster.repo_dir, sha, orchignore_lines), stream=True)

@@ -5,18 +5,11 @@ from __future__ import annotations
 import os
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
+from orch.conn import Result
 from orch.errors import RemoteError, UsageError
 from orch.render import shquote
-
-
-@dataclass
-class Result:
-    returncode: int
-    stdout: str
-    stderr: str
 
 
 class SSH:

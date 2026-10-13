@@ -26,10 +26,40 @@ def _parser(dotted: str):
     return getattr(importlib.import_module(module_name), func_name)
 
 
-def _upstream_ready(job: dict) -> tuple[bool, str]:
+def upstream_block(producer) -> dict | None:
+    """A snapshot of the run that produced the model, for the W&B table."""
+    if producer is None:
+        return None
+    config = getattr(producer, "config", None) or {}
+    orch = config.get("orch") or {}
+    spec_path = orch.get("spec_path") or ""
+    return {
+        "run_id": getattr(producer, "id", None) or orch.get("run_id"),
+        "run_name": getattr(producer, "name", None),
+        "fingerprint": orch.get("fingerprint"),
+        "spec": Path(spec_path).stem if spec_path else None,
+        "entry": orch.get("entry"),
+        "params": config.get("params") or {},
+    }
+
+
+def _artifact_producer(job: dict):
+    ref = job.get("model_ref") or ""
+    if not isinstance(ref, str) or not ref.startswith("artifact:"):
+        return None
+    import wandb
+
+    try:
+        artifact = wandb.Api().artifact(ref[len("artifact:") :])
+        return artifact.logged_by()
+    except Exception:
+        return None
+
+
+def _upstream_ready(job: dict) -> tuple[bool, str, object | None]:
     upstream = job.get("upstream_run_id")
     if not upstream:
-        return True, ""
+        return True, "", _artifact_producer(job)
     import wandb
 
     api = wandb.Api()
@@ -38,16 +68,16 @@ def _upstream_ready(job: dict) -> tuple[bool, str]:
     try:
         producer = api.run(f"{entity}/{project}/{upstream}")
     except Exception as exc:
-        return False, f"missing ({exc})"
+        return False, f"missing ({exc})", None
     artifacts = [item for item in producer.logged_artifacts() if item.type == "model"]
     if producer.state != "finished" or not artifacts:
-        return False, producer.state
-    return True, producer.state
+        return False, producer.state, None
+    return True, producer.state, producer
 
 
 def execute(run_dir: Path) -> int:
     job = read_job(run_dir)
-    ready, state = _upstream_ready(job)
+    ready, state, producer = _upstream_ready(job)
     if not ready:
         print(
             f"upstream {job.get('upstream_run_id')} not finished (state={state}); "
@@ -63,7 +93,13 @@ def execute(run_dir: Path) -> int:
         model_path, model_meta = resolve_model(job, run, work_dir)
         os.environ["ORCH_MODEL_PATH"] = str(model_path)
         command = job["command"].replace("{model_path}", shlex.quote(str(model_path)))
-        update_config(run, job, state=None, extra={"model": model_meta})
+        update_config(
+            run,
+            job,
+            state="running",
+            extra={"model": model_meta},
+            top_extra={"upstream": upstream_block(producer)},
+        )
         if model_meta.get("resolved_revision"):
             run.config.update(
                 {"orch": {**dict(run.config.get("orch", {})), "model": model_meta}},

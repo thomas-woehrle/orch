@@ -7,6 +7,7 @@ from pathlib import Path
 from orch.exec.common import (
     child_env,
     init_run,
+    now,
     read_job,
     save_files,
     tee_subprocess,
@@ -27,6 +28,11 @@ def execute(run_dir: Path) -> int:
     job = read_job(run_dir)
     for name in ("model", "checkpoints", "wandb"):
         (run_dir / name).mkdir(parents=True, exist_ok=True)
+    # Prologue: the run exists, with its orch config, before the script starts.
+    # finish() so the trainer is the only writer while it runs.
+    run, run_dir = init_run(job, run_dir)
+    update_config(run, job, state="running")
+    run.finish()
     code = tee_subprocess(
         job["command"],
         cwd=job["cluster"]["src_dir"],
@@ -37,7 +43,12 @@ def execute(run_dir: Path) -> int:
     model_dir = run_dir / "model"
     try:
         ready = code == 0 and model_ready(model_dir)
-        update_config(run, job, state="succeeded" if ready else "failed")
+        update_config(
+            run,
+            job,
+            state="succeeded" if ready else "failed",
+            extra={"ended_at": now()},
+        )
         if ready:
             artifact = wandb.Artifact(
                 name=f"model-{job['fingerprint']}",

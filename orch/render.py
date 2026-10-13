@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 from datetime import datetime, timezone
 from typing import Any
@@ -13,18 +14,17 @@ from orch import __version__
 from orch.errors import UsageError
 from orch.identity import FINGERPRINT_VERSION, fingerprint_document
 
-JOB_SH = """#!/bin/bash
-{{ header }}
-#$ -N orch_{{ fingerprint }}_a{{ attempt }}
-#$ -o {{ run_dir }}/sge.out
-#$ -e {{ run_dir }}/sge.err
-set -euo pipefail
+# Shared by every backend. The shebang, scheduler directives, and (for local)
+# the hold/device preamble are rendered by the backend. See docs/orchestrator.md §6.4.
+JOB_BODY = """set -euo pipefail
 {{ setup }}
 {% for key, value in env.items() %}export {{ key }}={{ value | shquote }}
 {% endfor %}
 cd {{ src_dir }}
-exec {{ venv_python }} -m orch exec {{ run_dir }}
+{% if exec_wrapper %}exec {% endif %}{{ venv_python }} -m orch exec {{ run_dir }}
 """
+
+CANONICAL_RESOURCE_KEYS = {"gpus", "gpu_type", "time", "mem", "device"}
 
 
 def shquote(value: str) -> str:
@@ -100,6 +100,15 @@ def template_names(template: str) -> tuple[set[str], set[str]]:
 
 
 def validate_resources(resources: dict[str, Any], header: str) -> None:
+    """Canonical resource keys, then the header template. ``device`` is local-only."""
+    unknown = sorted(set(resources) - CANONICAL_RESOURCE_KEYS)
+    if unknown:
+        raise UsageError(
+            "resource key outside the canonical set "
+            "(gpus, gpu_type, time, mem, device): " + ", ".join(unknown)
+        )
+    if "device" in resources:
+        raise UsageError("resource key 'device' is only valid on a local cluster")
     unguarded, every = template_names(header)
     missing = sorted(unguarded - set(resources))
     if missing:
@@ -121,33 +130,60 @@ def render_header(header: str, resources: dict[str, Any]) -> str:
     return rendered.strip("\n")
 
 
-def render_job_script(
+def render_job_body(
     *,
-    header: str,
     setup: str,
     env: dict[str, str],
-    fingerprint: str,
-    attempt: int,
     run_dir: str,
     src_dir: str,
     venv_python: str,
+    exec_wrapper: bool = True,
 ) -> str:
-    return _jinja().from_string(JOB_SH).render(
-        header=header,
+    """The scheduler-neutral half of ``job.sh``.
+
+    ``exec_wrapper`` is false for the local backend: its preamble installs an
+    EXIT trap that must run after the wrapper returns.
+    """
+    return _jinja().from_string(JOB_BODY).render(
         setup=setup.strip("\n"),
         env=env,
-        fingerprint=fingerprint,
-        attempt=attempt,
         run_dir=run_dir,
         src_dir=src_dir,
         venv_python=venv_python,
+        exec_wrapper=exec_wrapper,
     )
+
+
+_PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+
+
+def fill_placeholders(value: str, *, run_dir: str, kind: str) -> str:
+    """Fill ``{run_dir}``, ``{params}``, ``{output_dir}`` and ``{model_dir}``."""
+    allowed = {
+        "run_dir": run_dir,
+        "params": f"{run_dir}/params.yaml",
+        "output_dir": f"{run_dir}/output",
+        "model_dir": f"{run_dir}/model",
+    }
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in allowed:
+            raise UsageError(f"unknown env placeholder {{{name}}}")
+        if name == "output_dir" and kind != "eval":
+            raise UsageError("{output_dir} is only valid on an eval job")
+        if name == "model_dir" and kind != "train":
+            raise UsageError("{model_dir} is only valid on a train job")
+        return allowed[name]
+
+    return _PLACEHOLDER.sub(replace, value)
 
 
 def build_env(
     *,
     cluster_env: dict[str, str],
     entry_env: dict[str, str],
+    spec_env: dict[str, str] | None = None,
     entity: str,
     project: str,
     job_kind: str,
@@ -157,9 +193,14 @@ def build_env(
     group: str | None,
     run_dir: str,
 ) -> dict[str, str]:
-    env: dict[str, str] = {}
-    env.update(cluster_env)
-    env.update(entry_env)
+    merged: dict[str, str] = {}
+    merged.update(cluster_env)
+    merged.update(entry_env)
+    merged.update(spec_env or {})
+    env: dict[str, str] = {
+        key: fill_placeholders(str(value), run_dir=run_dir, kind=job_kind)
+        for key, value in merged.items()
+    }
     env["WANDB_RUN_ID"] = run_id
     env["WANDB_PROJECT"] = project
     env["WANDB_ENTITY"] = entity
@@ -209,9 +250,15 @@ def job_document(
     project: str,
     submitted_from: str,
     submitted_at: str,
+    job_id_env: str = "JOB_ID",
+    device: int | None = None,
+    orchignore_sha256: str | None = None,
+    hold_on: list[str] | None = None,
 ) -> dict[str, Any]:
+    spec = dict(job.spec)
+    spec["env"] = dict(getattr(job, "spec_env", None) or spec.get("env") or {})
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "orch_version": __version__,
         "fingerprint": job.fingerprint,
         "fingerprint_version": FINGERPRINT_VERSION,
@@ -221,7 +268,7 @@ def job_document(
         "kind": job.kind,
         "entry": job.entry,
         "spec_path": job.spec_path,
-        "spec": job.spec,
+        "spec": spec,
         "overrides": list(job.overrides),
         "model_ref": job.model_ref,
         "upstream_run_id": job.upstream_run_id,
@@ -239,11 +286,14 @@ def job_document(
             "work_dir": work_dir,
             "src_dir": src_dir,
             "venv_python": venv_python,
+            "job_id_env": job_id_env,
+            "device": device,
         },
-        "git": {"sha": sha, "remote": remote},
+        "git": {"sha": sha, "remote": remote, "orchignore_sha256": orchignore_sha256},
         "command": job.command,
         "parser": job.parser,
         "env": env,
+        "hold_on": list(hold_on or []),
         "submitted_from": submitted_from,
         "submitted_at": submitted_at,
     }

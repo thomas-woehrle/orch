@@ -29,13 +29,14 @@ class WandbTarget:
 class Cluster:
     name: str
     backend: str
-    ssh: str
     repo_dir: str
     work_dir: str
-    header: str
-    setup: str
+    ssh: str | None = None
+    header: str | None = None
+    setup: str = ""
     env: dict[str, str] = field(default_factory=dict)
     password_env: str | None = None
+    devices: list[int] | None = None
 
 
 @dataclass
@@ -142,26 +143,88 @@ def load_local(repo_root: Path) -> LocalConfig:
     )
 
 
+_BACKENDS = ("sge", "slurm", "local")
+
+
+def _require_text(body: dict, name: str, key: str) -> str:
+    value = body.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise UsageError(f"cluster {name}: {key} must be a string")
+    return value
+
+
 def _load_cluster(name: str, body: dict) -> Cluster:
     backend = body.get("backend")
-    if backend != "sge":
-        raise UsageError(f"cluster {name}: only backend 'sge' is supported in v0")
-    required = ("ssh", "repo_dir", "work_dir", "header", "setup")
-    for key in required:
-        if not isinstance(body.get(key), str) or not str(body.get(key)).strip():
-            raise UsageError(f"cluster {name}: {key} must be a string")
+    if backend not in _BACKENDS:
+        raise UsageError(
+            f"cluster {name}: backend must be one of {', '.join(_BACKENDS)}"
+        )
+    repo_dir = _require_text(body, name, "repo_dir")
+    work_dir = _require_text(body, name, "work_dir")
+    setup = body.get("setup", "")
+    if not isinstance(setup, str):
+        raise UsageError(f"cluster {name}: setup must be a string")
+    env = _string_map(body.get("env", {}), f"cluster {name} env")
+    if backend == "local":
+        return _load_local_cluster(name, body, repo_dir, work_dir, setup, env)
+    return _load_remote_cluster(name, body, backend, repo_dir, work_dir, setup, env)
+
+
+def _load_local_cluster(
+    name: str,
+    body: dict,
+    repo_dir: str,
+    work_dir: str,
+    setup: str,
+    env: dict[str, str],
+) -> Cluster:
+    if body.get("ssh"):
+        raise UsageError(f"cluster {name}: a local cluster does not take ssh")
+    if body.get("password_env") is not None:
+        raise UsageError(f"cluster {name}: a local cluster does not take password_env")
+    if body.get("header") is not None:
+        raise UsageError(f"cluster {name}: a local cluster does not take a header")
+    devices = body.get("devices")
+    if (
+        not isinstance(devices, list)
+        or not devices
+        or not all(type(item) is int for item in devices)
+    ):
+        raise UsageError(f"cluster {name}: devices must be a non-empty list of integers")
+    return Cluster(
+        name=name,
+        backend="local",
+        repo_dir=repo_dir,
+        work_dir=work_dir,
+        setup=setup,
+        env=env,
+        devices=list(devices),
+    )
+
+
+def _load_remote_cluster(
+    name: str,
+    body: dict,
+    backend: str,
+    repo_dir: str,
+    work_dir: str,
+    setup: str,
+    env: dict[str, str],
+) -> Cluster:
+    if "devices" in body:
+        raise UsageError(f"cluster {name}: devices is only valid for a local cluster")
     password_env = body.get("password_env")
     if password_env is not None and not isinstance(password_env, str):
         raise UsageError(f"cluster {name}: password_env must be a string")
     return Cluster(
         name=name,
-        backend="sge",
-        ssh=body["ssh"],
-        repo_dir=body["repo_dir"],
-        work_dir=body["work_dir"],
-        header=body["header"],
-        setup=body["setup"],
-        env=_string_map(body.get("env", {}), f"cluster {name} env"),
+        backend=backend,
+        ssh=_require_text(body, name, "ssh"),
+        repo_dir=repo_dir,
+        work_dir=work_dir,
+        header=_require_text(body, name, "header"),
+        setup=setup,
+        env=env,
         password_env=password_env,
     )
 

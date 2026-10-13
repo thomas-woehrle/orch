@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import os
+import re
 import shlex
 import sys
 from pathlib import Path
 
+from orch.backends import backend_for
 from orch.cache import Cache
 from orch.config import find_repo_root, load_local, load_orch, select_cluster
+from orch.conn import open_conn
 from orch.errors import UsageError
-from orch.plan import build_jobs, load_target
+from orch.driver import LazyStates
+from orch.plan import existing_attempt_ids, load_target
+
+_RUN_ID = re.compile(r"^[0-9a-f]{12}-a\d+$")
+_FINGERPRINT = re.compile(r"^[0-9a-f]{12}$")
 from orch.wb import WandbLookup
 
 
@@ -21,8 +29,8 @@ def _cache_and_lookup(repo: Path) -> tuple[Cache, WandbLookup]:
 
 
 def _runs_for_target(repo: Path, target: str, lookup: WandbLookup, cache: Cache) -> list[str]:
-    """Expand a run id, fingerprint, spec, or experiment into run ids."""
-    if "-a" in target and not target.endswith(".yaml") and not target.endswith(".yml"):
+    """Expand a run id, fingerprint, spec, or experiment into existing run ids."""
+    if _RUN_ID.fullmatch(target):
         return [target]
     path = Path(target)
     if not path.is_absolute():
@@ -30,75 +38,160 @@ def _runs_for_target(repo: Path, target: str, lookup: WandbLookup, cache: Cache)
     if path.is_file():
         kind, _data = load_target(path)
         if kind == "experiment" or path.suffix in {".yaml", ".yml"}:
-            # Fingerprints only; attempt listing comes from W&B plus the cache.
-            from orch.config import select_cluster
-
-            local = load_local(repo)
-            cluster = select_cluster(local, None)
-            jobs = build_jobs(
+            return existing_attempt_ids(
                 repo_root=repo,
                 target=path,
                 entries=load_orch(repo).entries,
-                cluster=cluster,
-                cache=cache,
                 probe=lookup.probe_attempts,
-                run_state=lookup.run_state,
-                model_ref=None,
+                cache=cache,
             )
-            return [job.run_id for job in jobs]
-    if len(target) == 12 and all(ch in "0123456789abcdef" for ch in target):
-        attempts = lookup.probe_attempts(target)
-        cached = [entry.attempt for entry in cache.for_fingerprint(target)]
-        numbers = sorted(set(attempts) | set(cached))
-        return [f"{target}-a{number}" for number in numbers] or [f"{target}-a1"]
+    if _FINGERPRINT.fullmatch(target):
+        numbers = sorted(
+            set(lookup.probe_attempts(target))
+            | {entry.attempt for entry in cache.for_fingerprint(target)}
+        )
+        return [f"{target}-a{number}" for number in numbers]
     return [target]
 
 
-def status_rows(repo: Path, targets: list[str], *, no_remote: bool) -> list[dict]:
+def assemble_status_row(
+    run_id: str,
+    *,
+    cached,
+    run,
+    scheduler_state: str | None,
+    entity: str,
+    project: str,
+) -> dict:
+    """Prefer the run id and the W&B run over the local cache.
+
+    The fingerprint and attempt are the run id. Name, kind, cluster, and
+    scheduler id come from the run once the wrapper has started, and from the
+    cache only for jobs that have not.
+    """
+    match = re.fullmatch(r"([0-9a-f]{12})-a(\d+)", run_id)
+    orch = {}
+    if run is not None:
+        orch = (getattr(run, "config", None) or {}).get("orch") or {}
+    cluster_block = orch.get("cluster") or {}
+    fingerprint = match.group(1) if match else orch.get("fingerprint")
+    attempt = int(match.group(2)) if match else orch.get("attempt")
+    if fingerprint is None and cached is not None:
+        fingerprint = cached.fingerprint
+    if attempt is None and cached is not None:
+        attempt = cached.attempt
+    run_name = getattr(run, "name", None) if run is not None else None
+    if not run_name and cached is not None:
+        run_name = cached.name
+    return {
+        "run_id": run_id,
+        "run_name": run_name,
+        "fingerprint": fingerprint,
+        "attempt": attempt,
+        "kind": orch.get("kind") or (None if cached is None else cached.kind),
+        "cluster": cluster_block.get("name") or (None if cached is None else cached.cluster),
+        "decision": None,
+        "reason": None,
+        "scheduler_id": orch.get("scheduler_id") or (None if cached is None else cached.scheduler_id),
+        "wandb_state": None if run is None else getattr(run, "state", None),
+        "scheduler_state": scheduler_state,
+        "url": f"https://wandb.ai/{entity}/{project}/runs/{run_id}",
+        "dependency": None,
+    }
+
+
+def _note_cache_override(cache: Cache) -> None:
+    if os.environ.get("WANDB_ENTITY") or os.environ.get("WANDB_PROJECT"):
+        print(
+            f"cache: {cache.path} (WANDB_ENTITY/WANDB_PROJECT override orch.local.yaml)",
+            file=sys.stderr,
+        )
+
+
+def _active_run_ids(cache: Cache, states: LazyStates, *, cluster_name: str | None) -> list[str]:
+    clusters = sorted({entry.cluster for entry in cache.entries.values()})
+    if cluster_name is not None:
+        clusters = [name for name in clusters if name == cluster_name]
+    found: list[str] = []
+    for name in clusters:
+        mapping = states(name) or {}
+        for run_id, entry in cache.entries.items():
+            if entry.cluster != name:
+                continue
+            if mapping.get(entry.scheduler_id, "gone") in {"queued", "running"}:
+                found.append(run_id)
+    return found
+
+
+def status_rows(
+    repo: Path,
+    targets: list[str],
+    *,
+    no_remote: bool,
+    all_entries: bool = False,
+    cluster_name: str | None = None,
+) -> list[dict]:
     local = load_local(repo)
     cache, lookup = _cache_and_lookup(repo)
-    qstat: dict[str, str] = {}
-    if not no_remote and cache.entries:
-        from orch.backends.sge import SGEBackend
-        from orch.ssh import SSH
+    _note_cache_override(cache)
 
-        cluster = select_cluster(local, None)
+    def query(name: str) -> dict[str, str]:
+        cluster = select_cluster(local, name)
         try:
-            with SSH(cluster.ssh, cluster.password_env) as conn:
-                qstat = SGEBackend().status_map(conn)
+            with open_conn(cluster) as conn:
+                return backend_for(cluster).status_map(conn)
         except Exception as exc:
-            qstat = {}
-            print(f"warning: qstat failed ({exc})", file=sys.stderr, flush=True)
+            print(f"warning: scheduler query failed for {name} ({exc})", file=sys.stderr, flush=True)
+            return {}
+
+    states = LazyStates(query, dry_run=no_remote)
     if targets:
-        run_ids = []
+        run_ids: list[str] = []
         for target in targets:
             run_ids.extend(_runs_for_target(repo, target, lookup, cache))
+    elif all_entries:
+        run_ids = [
+            run_id
+            for run_id, entry in cache.entries.items()
+            if cluster_name is None or entry.cluster == cluster_name
+        ]
     else:
-        run_ids = list(cache.entries)
+        run_ids = [] if no_remote else _active_run_ids(cache, states, cluster_name=cluster_name)
+
     rows = []
     for run_id in run_ids:
         cached = cache.by_run_id(run_id)
-        state = lookup.run_state(run_id)
-        sched = None
-        if cached is not None:
-            sched = "unknown" if no_remote else qstat.get(cached.scheduler_id, "gone")
-        rows.append(
-            {
-                "run_id": run_id,
-                "run_name": None if cached is None else cached.name,
-                "fingerprint": None if cached is None else cached.fingerprint,
-                "attempt": None if cached is None else cached.attempt,
-                "kind": None if cached is None else cached.kind,
-                "decision": None,
-                "reason": None,
-                "scheduler_id": None if cached is None else cached.scheduler_id,
-                "wandb_state": state,
-                "scheduler_state": sched,
-                "url": f"https://wandb.ai/{local.wandb.entity}/{local.wandb.project}/runs/{run_id}",
-                "dependency": None,
-            }
+        run = lookup.run(run_id)
+        draft = assemble_status_row(
+            run_id,
+            cached=cached,
+            run=run,
+            scheduler_state=None,
+            entity=local.wandb.entity,
+            project=local.wandb.project,
         )
+        sched = None
+        if draft["cluster"] and draft["scheduler_id"]:
+            if no_remote:
+                sched = "unknown"
+            else:
+                mapping = states(draft["cluster"])
+                sched = "unknown" if mapping is None else mapping.get(draft["scheduler_id"], "gone")
+        draft["scheduler_state"] = sched
+        rows.append(draft)
+    if cluster_name is not None:
+        rows = [row for row in rows if row.get("cluster") == cluster_name]
     return rows
+
+
+_LOG_NAMES = {
+    "stdout": ["stdout.log"],
+    "stderr": ["stderr.log"],
+    "scheduler.out": ["scheduler.out", "sge.out"],
+    "scheduler.err": ["scheduler.err", "sge.err"],
+    "sge.out": ["scheduler.out", "sge.out"],
+    "sge.err": ["scheduler.err", "sge.err"],
+}
 
 
 def show_logs(
@@ -108,8 +201,11 @@ def show_logs(
     which: str = "stdout",
     follow: bool = False,
 ) -> None:
-    if which not in {"stdout", "stderr", "sge.out", "sge.err"}:
-        raise UsageError("--which must be stdout, stderr, sge.out, or sge.err")
+    names = _LOG_NAMES.get(which)
+    if names is None:
+        raise UsageError(
+            "--which must be stdout, stderr, scheduler.out, or scheduler.err"
+        )
     local = load_local(repo)
     cache = Cache.load(local.wandb.entity, local.wandb.project)
     lookup = WandbLookup(local.wandb.entity, local.wandb.project)
@@ -118,35 +214,34 @@ def show_logs(
     remote = state in {None, "running"} and cached is not None
     if remote:
         cluster = select_cluster(local, cached.cluster)
-        filename = {
-            "stdout": "stdout.log",
-            "stderr": "stderr.log",
-            "sge.out": "sge.out",
-            "sge.err": "sge.err",
-        }[which]
-        path = f"{cluster.work_dir}/{run_id}/{filename}"
-        from orch.ssh import SSH
-
         follow_flag = "-f " if follow else ""
-        with SSH(cluster.ssh, cluster.password_env) as conn:
+        with open_conn(cluster) as conn:
+            path = next(
+                (
+                    f"{cluster.work_dir}/{run_id}/{name}"
+                    for name in names
+                    if conn.exists(f"{cluster.work_dir}/{run_id}/{name}")
+                ),
+                f"{cluster.work_dir}/{run_id}/{names[0]}",
+            )
             conn.run(f"tail -n +1 {follow_flag}{shlex.quote(path)}", stream=True, check=False)
         return
     run = lookup.run(run_id)
     if run is None:
         raise UsageError(f"no W&B run {run_id}")
-    name = {
-        "stdout": "stdout.log",
-        "stderr": "stderr.log",
-        "sge.out": "sge.out",
-        "sge.err": "sge.err",
-    }[which]
     match = None
+    found_name = names[0]
     for item in run.files():
-        if item.name.endswith(name):
-            match = item
+        for name in names:
+            if item.name.endswith(name):
+                match = item
+                found_name = name
+                break
+        if match is not None:
             break
     if match is None:
-        raise UsageError(f"{run_id} has no file {name}")
+        raise UsageError(f"{run_id} has no file {found_name}")
+    name = found_name
     import tempfile
 
     dest = Path(tempfile.mkdtemp())
@@ -221,9 +316,6 @@ def cancel_runs(repo: Path, run_ids: list[str]) -> list[str]:
     local = load_local(repo)
     cache = Cache.load(local.wandb.entity, local.wandb.project)
     lookup = WandbLookup(local.wandb.entity, local.wandb.project)
-    from orch.backends.sge import SGEBackend
-    from orch.ssh import SSH
-
     deleted: dict[str, str] = {}
     by_cluster: dict[str, list[tuple[str, str]]] = {}
     for run_id in run_ids:
@@ -231,10 +323,10 @@ def cancel_runs(repo: Path, run_ids: list[str]) -> list[str]:
         if cached is None:
             continue
         by_cluster.setdefault(cached.cluster, []).append((run_id, cached.scheduler_id))
-    backend = SGEBackend()
     for cluster_name, jobs in by_cluster.items():
         cluster = select_cluster(local, cluster_name)
-        with SSH(cluster.ssh, cluster.password_env) as conn:
+        backend = backend_for(cluster)
+        with open_conn(cluster) as conn:
             for run_id, scheduler_id in jobs:
                 backend.cancel(conn, scheduler_id)
                 deleted[run_id] = scheduler_id

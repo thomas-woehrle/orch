@@ -30,6 +30,18 @@ def _fail(exc: OrchError) -> None:
     raise typer.Exit(code=exc.exit_code)
 
 
+def _validate_resources(repo, cluster_name: str | None, resources: dict) -> None:
+    """Check the spec's resources against a cluster when local config exists."""
+    from orch.backends import backend_for
+    from orch.config import load_local, select_cluster
+
+    if cluster_name is None and not (repo / "orch.local.yaml").is_file():
+        return
+    local = load_local(repo)
+    chosen = select_cluster(local, cluster_name)
+    backend_for(chosen).validate_resources(resources, chosen)
+
+
 def _artifact_needs_lookup(model: str) -> bool:
     version = model.rsplit(":", 1)[-1]
     return re.fullmatch(r"v\d+", version) is None
@@ -63,6 +75,10 @@ def _lookup_for(repo_root: Path, model: str | None):
 @app.command()
 def inspect(
     spec: Annotated[Path, typer.Argument(help="Run spec path, relative to the repository root.")],
+    cluster: Annotated[
+        str | None,
+        typer.Option("--cluster", help="Validate resources against this cluster. Defaults to default_cluster when orch.local.yaml is present."),
+    ] = None,
     model: Annotated[
         str | None,
         typer.Option("--model", help="Model reference (hf:, run:, fingerprint:, artifact:). Required for eval specs."),
@@ -100,6 +116,7 @@ def inspect(
             model_ref=model,
             lookup=_lookup_for(repo, model),
         )
+        _validate_resources(repo, cluster, resolved.resources)
     except OrchError as exc:
         _fail(exc)
     payload = {
@@ -212,16 +229,24 @@ def eval_cmd(
 
 @app.command()
 def status(
-    targets: Annotated[list[str] | None, typer.Argument(help="Spec, experiment, fingerprint, or run id. Omit for the local cache.")] = None,
-    no_remote: Annotated[bool, typer.Option("--no-remote", help="Do not query qstat.")] = False,
+    targets: Annotated[list[str] | None, typer.Argument(help="Spec, experiment, fingerprint, or run id. Omit for jobs that are queued or running.")] = None,
+    all_entries: Annotated[bool, typer.Option("--all", help="With no targets, list every cached run rather than only active jobs.")] = False,
+    cluster: Annotated[str | None, typer.Option("--cluster", help="Only runs on this cluster.")] = None,
+    no_remote: Annotated[bool, typer.Option("--no-remote", help="Do not query the scheduler.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    """Show W&B and scheduler state for cached or requested runs."""
+    """Show W&B and scheduler state. With no arguments, list active jobs on every cluster."""
     from orch.driver import format_report
     from orch.ops import repo, status_rows
 
     try:
-        rows = status_rows(repo(), list(targets or []), no_remote=no_remote)
+        rows = status_rows(
+            repo(),
+            list(targets or []),
+            no_remote=no_remote,
+            all_entries=all_entries,
+            cluster_name=cluster,
+        )
     except OrchError as exc:
         _fail(exc)
     typer.echo(format_report(rows, as_json=json_output))
@@ -231,7 +256,7 @@ def status(
 def logs(
     run_id: Annotated[str, typer.Argument(help="W&B run id, fingerprint-aN.")],
     follow: Annotated[bool, typer.Option("--follow", help="Follow a remote log. Only for a job that has not finished.")] = False,
-    which: Annotated[str, typer.Option("--which", help="stdout, stderr, sge.out, or sge.err.")] = "stdout",
+    which: Annotated[str, typer.Option("--which", help="stdout, stderr, scheduler.out, or scheduler.err. sge.out and sge.err are aliases.")] = "stdout",
 ) -> None:
     """Print a finished run's file from W&B, or tail it on the cluster while it is in flight."""
     from orch.ops import repo, show_logs

@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from orch.backends.sge import SGEBackend
+from orch.backends import backend_for
 from orch.cache import Cache, CacheEntry
+from orch.conn import open_conn
 from orch.config import Cluster, Entry, LocalConfig, load_local, load_orch, select_cluster
 from orch.errors import RemoteError, UsageError
 from orch.gitpreflight import git_state
@@ -38,6 +39,7 @@ def format_report(rows: list[dict], *, as_json: bool) -> str:
         "run_id",
         "run_name",
         "kind",
+        "cluster",
         "decision",
         "reason",
         "fingerprint",
@@ -87,20 +89,37 @@ def _apply_ledger(conn, job: Job, cluster: Cluster) -> str | None:
     return old
 
 
-def _holds(job: Job, jobs: list[Job], cache: Cache, qstat: dict[str, str]) -> list[str]:
+def _holds(
+    job: Job, jobs: list[Job], cache: Cache, qstat: dict[str, str], *, cluster_name: str
+) -> list[str]:
+    """Holds are per cluster: a scheduler id from another cluster cannot be named."""
     if not job.upstream_run_id:
         return []
     for other in jobs:
         if other.run_id == job.upstream_run_id and other.scheduler_id:
-            if other.decision == "submit":
+            if other.decision == "submit" and other.cluster == cluster_name:
                 return [other.scheduler_id]
     cached = cache.by_run_id(job.upstream_run_id)
-    if cached is None:
+    if cached is None or cached.cluster != cluster_name:
         return []
     state = qstat.get(cached.scheduler_id, "gone")
     if state in {"queued", "running", "unknown"}:
         return [cached.scheduler_id]
     return []
+
+
+class LazyStates:
+    """Fetch each cluster's scheduler map on first use. A dry run fetches nothing."""
+
+    def __init__(self, query, *, dry_run: bool) -> None:
+        self._query = query
+        self._dry_run = dry_run
+        self._maps: dict[str, dict[str, str] | None] = {}
+
+    def __call__(self, cluster_name: str) -> dict[str, str] | None:
+        if cluster_name not in self._maps:
+            self._maps[cluster_name] = None if self._dry_run else self._query(cluster_name)
+        return self._maps[cluster_name]
 
 
 def submit_jobs(
@@ -117,6 +136,7 @@ def submit_jobs(
     sha: str,
     remote: str,
     probe,
+    orchignore_sha256: str | None = None,
 ) -> list[Job]:
     """Write per-attempt files and qsub. Trains first, then evals."""
     del entries, probe  # attempts were assigned in build_jobs; ledger adjusts them
@@ -149,9 +169,12 @@ def submit_jobs(
             if job.kind == "eval":
                 _apply_ledger(conn, job, cluster)
             run_dir = f"{cluster.work_dir}/{job.run_id}"
+            holds = _holds(job, jobs, cache, qstat, cluster_name=cluster.name)
+            job.hold_on = holds
             env = build_env(
                 cluster_env=cluster.env,
                 entry_env=job.entry_env,
+                spec_env=job.spec_env,
                 entity=entity,
                 project=project,
                 job_kind=job.kind,
@@ -161,7 +184,9 @@ def submit_jobs(
                 group=job.group,
                 run_dir=run_dir,
             )
-            script = backend.render_job_script(job, cluster, env, src_dir, venv_python)
+            script = backend.render_job_script(
+                job, cluster, env, src_dir, venv_python, holds
+            )
             document = job_document(
                 job=job,
                 cluster_name=cluster.name,
@@ -177,6 +202,10 @@ def submit_jobs(
                 project=project,
                 submitted_from=submitted_from,
                 submitted_at=submitted_at,
+                job_id_env=backend.job_id_env,
+                device=job.resources.get("device"),
+                orchignore_sha256=orchignore_sha256,
+                hold_on=holds,
             )
             conn.put_text(f"{run_dir}/job.sh", script)
             conn.put_text(f"{run_dir}/job.json", json.dumps(document, indent=2) + "\n")
@@ -185,8 +214,6 @@ def submit_jobs(
                 f"{run_dir}/fingerprint.json",
                 fingerprint_json(job.fingerprint_input, job.canonical, job.fingerprint),
             )
-            holds = _holds(job, jobs, cache, qstat)
-            job.hold_on = holds
             job.scheduler_id = backend.submit(conn, run_dir, holds)
             cache.upsert(
                 job.run_id,
@@ -229,43 +256,51 @@ def execute_run(
     overrides = cli_overrides_from_argv() if argv_overrides else []
     lookup = WandbLookup(local.wandb.entity, local.wandb.project)
     cache = Cache.load(local.wandb.entity, local.wandb.project)
-    qstat: dict[str, str] | None = None
     conn = None
-    backend = SGEBackend()
-    if not dry_run:
-        from orch.ssh import SSH
-
-        conn = SSH(cluster.ssh, cluster.password_env)
-        try:
-            conn.connect()
-            qstat = backend.status_map(conn)
-        except RemoteError:
-            raise
-        except Exception as exc:
-            raise RemoteError(f"could not reach {cluster.name}: {exc}") from exc
-    jobs = build_jobs(
-        repo_root=repo_root,
-        target=target if target.is_absolute() else repo_root / target,
-        entries=orch.entries,
-        cluster=cluster,
-        cli_overrides=overrides,
-        model_ref=model_ref,
-        evals_override=evals,
-        no_evals=no_evals,
-        tags=tags,
-        group=group,
-        force=force,
-        lookup=lookup,
-        cache=cache,
-        probe=lookup.probe_attempts,
-        run_state=lookup.run_state,
-        qstat=qstat,
-    )
-    if dry_run:
-        return report_rows(jobs, entity=local.wandb.entity, project=local.wandb.project)
-    assert conn is not None and qstat is not None
+    backend = backend_for(cluster)
     try:
-        sha, remote = git_state(repo_root)
+        if not dry_run:
+            conn = open_conn(cluster)
+            try:
+                conn.connect()
+            except RemoteError:
+                raise
+            except Exception as exc:
+                raise RemoteError(f"could not reach {cluster.name}: {exc}") from exc
+
+        def query(name: str) -> dict[str, str]:
+            assert conn is not None
+            if name == cluster.name:
+                return backend.status_map(conn)
+            other = select_cluster(local, name)
+            with open_conn(other) as extra:
+                return backend_for(other).status_map(extra)
+
+        states = LazyStates(query, dry_run=dry_run)
+        jobs = build_jobs(
+            repo_root=repo_root,
+            target=target if target.is_absolute() else repo_root / target,
+            entries=orch.entries,
+            cluster=cluster,
+            cli_overrides=overrides,
+            model_ref=model_ref,
+            evals_override=evals,
+            no_evals=no_evals,
+            tags=tags,
+            group=group,
+            force=force,
+            lookup=lookup,
+            cache=cache,
+            probe=lookup.probe_attempts,
+            run_state=lookup.run_state,
+            scheduler_states=states,
+        )
+        if dry_run:
+            return report_rows(jobs, entity=local.wandb.entity, project=local.wandb.project)
+        assert conn is not None
+        qstat = states(cluster.name) or {}
+        git = git_state(repo_root)
+        sha, remote = git.sha, git.remote
         if any(job.decision == "submit" for job in jobs):
             stage(
                 conn,
@@ -275,6 +310,7 @@ def execute_run(
                 cache=cache,
                 qstat=qstat,
                 resync=resync,
+                orchignore_lines=git.orchignore_lines,
             )
             submit_jobs(
                 jobs,
@@ -289,9 +325,11 @@ def execute_run(
                 sha=sha,
                 remote=remote,
                 probe=lookup.probe_attempts,
+                orchignore_sha256=git.orchignore_sha256,
             )
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     return report_rows(jobs, entity=local.wandb.entity, project=local.wandb.project)
 
 

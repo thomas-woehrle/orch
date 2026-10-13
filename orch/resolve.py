@@ -26,8 +26,9 @@ SPEC_KEYS = {
     "evals",
     "name_keys",
     "description",
+    "env",
 }
-OVERRIDE_ROOTS = {"params", "resources", "evals", "runtime_keys", "name_keys"}
+OVERRIDE_ROOTS = {"params", "resources", "evals", "runtime_keys", "name_keys", "env"}
 FORBIDDEN_ROOTS = {"kind", "entry", "extends"}
 
 
@@ -50,6 +51,7 @@ class ResolvedSpec:
     evals: list[str]
     name_keys: dict[str, str]
     description: str
+    env: dict[str, str]
     overrides: list[dict[str, Any]]
     name_segments: list[tuple[str, Any]]
     override_segments: list[tuple[str, Any]]
@@ -78,6 +80,7 @@ class ResolvedSpec:
             "evals": list(self.evals),
             "name_keys": dict(self.name_keys),
             "description": self.description,
+            "env": dict(self.env),
         }
 
 
@@ -210,6 +213,27 @@ def _load_params_file(path: Path, stack: tuple[Path, ...]) -> tuple[dict[str, An
         if key not in union:
             union.append(key)
     return merged, union
+
+
+def _env_map(value: Any, what: str) -> dict[str, str]:
+    """Env values are scalars. They are stored as strings; placeholders stay literal."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise UsageError(f"{what} must be a mapping")
+    out: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise UsageError(f"{what} keys must be non-empty strings")
+        if isinstance(item, bool):
+            out[key] = "true" if item else "false"
+        elif isinstance(item, (int, float)):
+            out[key] = str(item)
+        elif isinstance(item, str):
+            out[key] = item
+        else:
+            raise UsageError(f"{what}.{key} must be a scalar")
+    return out
 
 
 def _string_list(value: Any, what: str) -> list[str]:
@@ -438,6 +462,7 @@ def resolve_spec(
         evals=list(merged.get("evals") or []),
         name_keys=name_keys,
         description=merged.get("description") or "",
+        env=dict(merged.get("env") or {}),
         overrides=annotated_overrides([*runtime_overrides, *applied], runtime_keys),
         name_segments=name_segments,
         override_segments=override_segments,
@@ -479,6 +504,7 @@ def _validate_resolved(
     if not isinstance(description, str):
         raise UsageError("description must be a string")
     merged["description"] = description
+    merged["env"] = _env_map(merged.get("env") or {}, "env")
 
     evals = merged.get("evals") or []
     if kind == "eval" and evals:

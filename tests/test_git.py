@@ -24,9 +24,10 @@ def test_clean_pushed_tree_and_refusals(tmp_path: Path):
     _git(repo, "commit", "-m", "init")
     _git(repo, "remote", "add", "origin", "https://example.com/repo.git")
     _git(repo, "update-ref", "refs/remotes/origin/master", "HEAD")
-    sha, remote = git_state(repo)
-    assert len(sha) == 40
-    assert remote.endswith("repo.git")
+    state = git_state(repo)
+    assert len(state.sha) == 40
+    assert state.remote.endswith("repo.git")
+    assert state.orchignore_sha256 is None
     (repo / "readme").write_text("dirty\n")
     with pytest.raises(PreconditionError, match="not clean"):
         git_state(repo)

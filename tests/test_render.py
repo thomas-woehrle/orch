@@ -1,12 +1,13 @@
 """job.sh rendering and flag/env rules."""
 
-from orch.backends.sge import classify_sge_state, parse_qstat_xml
+from types import SimpleNamespace
+
+from orch.backends.sge import SGEBackend, classify_sge_state, parse_qstat_xml
 from orch.config import Cluster
 from orch.render import (
     build_env,
     render_flags,
     render_header,
-    render_job_script,
     validate_resources,
 )
 from orch.errors import UsageError
@@ -15,7 +16,7 @@ import pytest
 HEADER = """#$ -q gpu
 #$ -l gpu={{ gpus }}
 {% if gpu_type %}#$ -l {{ gpu_type }}=true{% endif %}
-#$ -l h_rt={{ h_rt }}
+#$ -l h_rt={{ time }}
 #$ -l h_rss={{ mem }}
 """
 
@@ -39,7 +40,7 @@ def test_flags_quoting_and_omission():
 
 
 def test_header_with_and_without_gpu_type():
-    plain = render_header(HEADER, {"gpus": 1, "h_rt": "12:00:00", "mem": "24G"})
+    plain = render_header(HEADER, {"gpus": 1, "time": "12:00:00", "mem": "24G"})
     assert plain == "\n".join(
         [
             "#$ -q gpu",
@@ -50,13 +51,15 @@ def test_header_with_and_without_gpu_type():
         ]
     )
     typed = render_header(
-        HEADER, {"gpus": 1, "gpu_type": "h200", "h_rt": "24:00:00", "mem": "24G"}
+        HEADER, {"gpus": 1, "gpu_type": "h200", "time": "24:00:00", "mem": "24G"}
     )
     assert "#$ -l h200=true" in typed
-    with pytest.raises(UsageError, match="not referenced"):
-        validate_resources({"gpus": 1, "h_rt": "1", "mem": "1", "extra": 1}, HEADER)
+    with pytest.raises(UsageError, match="canonical"):
+        validate_resources({"gpus": 1, "time": "1", "mem": "1", "extra": 1}, HEADER)
     with pytest.raises(UsageError, match="without a guard"):
         validate_resources({"gpus": 1}, HEADER)
+    with pytest.raises(UsageError, match="device"):
+        validate_resources({"gpus": 1, "time": "1", "mem": "1", "device": 0}, HEADER)
 
 
 def test_golden_job_sh():
@@ -72,36 +75,40 @@ def test_golden_job_sh():
         group=None,
         run_dir="/work/3f9a2c1d7e4b-a1",
     )
-    script = render_job_script(
-        header=render_header(HEADER, {"gpus": 1, "h_rt": "01:00:00", "mem": "24G"}),
+    cluster = Cluster(
+        name="eddie",
+        backend="sge",
+        ssh="eddie",
+        repo_dir="/repo",
+        work_dir="/work",
+        header=HEADER,
         setup=SETUP,
-        env=env,
+    )
+    job = SimpleNamespace(
+        run_id="3f9a2c1d7e4b-a1",
         fingerprint="3f9a2c1d7e4b",
         attempt=1,
-        run_dir="/work/3f9a2c1d7e4b-a1",
-        src_dir="/repo/.worktrees/abc",
-        venv_python="/repo/.venv/bin/python",
+        resources={"gpus": 1, "time": "01:00:00", "mem": "24G"},
+    )
+    script = SGEBackend().render_job_script(
+        job, cluster, env, "/repo/.worktrees/abc", "/repo/.venv/bin/python", []
     )
     assert script == GOLDEN
-    typed = render_job_script(
-        header=render_header(
-            HEADER, {"gpus": 1, "gpu_type": "h200", "h_rt": "01:00:00", "mem": "24G"}
-        ),
-        setup=SETUP,
-        env=env,
-        fingerprint="3f9a2c1d7e4b",
-        attempt=1,
-        run_dir="/work/3f9a2c1d7e4b-a1",
-        src_dir="/repo/.worktrees/abc",
-        venv_python="/repo/.venv/bin/python",
+    job.resources = {"gpus": 1, "gpu_type": "h200", "time": "01:00:00", "mem": "24G"}
+    typed = SGEBackend().render_job_script(
+        job, cluster, env, "/repo/.worktrees/abc", "/repo/.venv/bin/python", []
     )
     assert "#$ -l h200=true\n#$ -l h_rt=01:00:00" in typed
 
 
 def test_env_precedence_puts_orch_last():
     env = build_env(
-        cluster_env={"WANDB_PROJECT": "from-cluster", "HF_HOME": "/hf"},
-        entry_env={"WANDB_PROJECT": "from-entry"},
+        cluster_env={
+            "WANDB_PROJECT": "from-cluster",
+            "HF_HOME": "/hf",
+            "HF_METRICS_CACHE": "/hf/metrics",
+        },
+        entry_env={"WANDB_PROJECT": "from-entry", "HF_METRICS_CACHE": "{run_dir}/metrics"},
         entity="ent",
         project="proj",
         job_kind="train",
@@ -112,11 +119,28 @@ def test_env_precedence_puts_orch_last():
         run_dir="/work/fp-a1",
     )
     assert env["HF_HOME"] == "/hf"
+    # The entry's placeholder wins over the cluster, and is filled per attempt.
+    assert env["HF_METRICS_CACHE"] == "/work/fp-a1/metrics"
     assert env["WANDB_PROJECT"] == "proj"
     assert env["WANDB_RUN_GROUP"] == "g"
     assert env["ORCH_MODEL_DIR"] == "/work/fp-a1/model"
     assert "ORCH_OUTPUT_DIR" not in env
     assert list(env).index("HF_HOME") < list(env).index("WANDB_RUN_ID")
+
+
+def test_env_placeholders_reject_unknown_and_the_wrong_kind():
+    from orch.render import fill_placeholders
+
+    assert fill_placeholders("a {run_dir} {params}", run_dir="/work/fp-a1", kind="train") == (
+        "a /work/fp-a1 /work/fp-a1/params.yaml"
+    )
+    assert fill_placeholders("{model_dir}", run_dir="/work/fp-a1", kind="train") == "/work/fp-a1/model"
+    with pytest.raises(UsageError, match="unknown env placeholder"):
+        fill_placeholders("{flags}", run_dir="/work/fp-a1", kind="train")
+    with pytest.raises(UsageError, match="model_dir"):
+        fill_placeholders("{model_dir}", run_dir="/work/fp-a1", kind="eval")
+    with pytest.raises(UsageError, match="output_dir"):
+        fill_placeholders("{output_dir}", run_dir="/work/fp-a1", kind="train")
 
 
 def test_qstat_parser():
@@ -151,8 +175,8 @@ GOLDEN = """#!/bin/bash
 #$ -l h_rt=01:00:00
 #$ -l h_rss=24G
 #$ -N orch_3f9a2c1d7e4b_a1
-#$ -o /work/3f9a2c1d7e4b-a1/sge.out
-#$ -e /work/3f9a2c1d7e4b-a1/sge.err
+#$ -o /work/3f9a2c1d7e4b-a1/scheduler.out
+#$ -e /work/3f9a2c1d7e4b-a1/scheduler.err
 set -euo pipefail
 . /etc/profile.d/modules.sh
 module load cuda
@@ -174,6 +198,3 @@ export ORCH_OUTPUT_DIR='/work/3f9a2c1d7e4b-a1/output'
 cd /repo/.worktrees/abc
 exec /repo/.venv/bin/python -m orch exec /work/3f9a2c1d7e4b-a1
 """
-
-# Cluster is referenced so the import stays meaningful for header callers.
-_ = Cluster

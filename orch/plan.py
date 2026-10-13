@@ -13,9 +13,10 @@ from orch.errors import UsageError
 from orch.identity import canonical_json, fingerprint_hex, fingerprint_input
 from orch.modelref import ModelLookup
 from orch.naming import format_run_name
-from orch.reconcile import Decision, attempt_views, decide, upstream_allows
-from orch.render import render_command, validate_resources
-from orch.resolve import Override, ResolvedSpec, resolve_spec
+from orch.reconcile import Decision, SchedulerStates, attempt_views, decide, upstream_allows
+from orch.backends import backend_for
+from orch.render import render_command
+from orch.resolve import Override, ResolvedSpec, _env_map, resolve_spec
 from orch.yamlio import load_path
 
 Probe = Callable[[str], dict[int, str]]
@@ -29,6 +30,7 @@ class Job:
     fingerprint: str
     attempt: int
     kind: str
+    cluster: str
     entry: str
     spec_path: str
     stem: str
@@ -47,6 +49,7 @@ class Job:
     command: str
     parser: str | None
     entry_env: dict[str, str]
+    spec_env: dict[str, str]
     tags: list[str]
     group: str | None
     decision: str
@@ -64,6 +67,7 @@ class Job:
             "fingerprint": self.fingerprint,
             "attempt": self.attempt,
             "kind": self.kind,
+            "cluster": self.cluster,
             "decision": self.decision,
             "reason": self.reason,
             "scheduler_id": self.scheduler_id,
@@ -83,6 +87,7 @@ class _Item:
     model: str | None
     evals: list[str] | None
     tags: list[str]
+    env: dict[str, str] | None = None
 
 
 def load_target(path: Path) -> tuple[str, Any]:
@@ -117,7 +122,7 @@ def _items_from_experiment(path: Path, data: dict[str, Any], repo_root: Path) ->
     for index, raw in enumerate(runs):
         if not isinstance(raw, dict):
             raise UsageError(f"runs[{index}] must be a mapping")
-        extra = set(raw) - {"config", "set", "model", "evals", "tags"}
+        extra = set(raw) - {"config", "set", "model", "evals", "tags", "env"}
         if extra:
             raise UsageError(f"runs[{index}] has unknown keys: {', '.join(sorted(extra))}")
         config = raw.get("config")
@@ -140,9 +145,71 @@ def _items_from_experiment(path: Path, data: dict[str, Any], repo_root: Path) ->
                 model=model,
                 evals=evals,
                 tags=tags,
+                env=_env_map(raw.get("env"), f"runs[{index}].env"),
             )
         )
     return items, shared
+
+
+def existing_attempt_ids(
+    *,
+    repo_root: Path,
+    target: Path,
+    entries: dict[str, Entry],
+    probe: Probe,
+    cache: Cache,
+) -> list[str]:
+    """Run ids that already exist for a spec or experiment.
+
+    Attempts come from W&B and the cache. Nothing the planner would submit
+    next is included: ``orch run --dry-run`` is the command for that.
+    """
+    kind, data = load_target(target)
+    if kind == "experiment":
+        items, _shared = _items_from_experiment(target, data, repo_root)
+    else:
+        items = [_Item(spec_path=target, extra_set=None, model=None, evals=None, tags=[])]
+
+    seen: list[str] = []
+
+    def add(run_id: str) -> None:
+        if run_id not in seen:
+            seen.append(run_id)
+
+    def attempts_of(fingerprint: str) -> list[int]:
+        found = set(probe(fingerprint))
+        found.update(entry.attempt for entry in cache.for_fingerprint(fingerprint))
+        return sorted(found)
+
+    for item in items:
+        resolved = resolve_spec(
+            item.spec_path,
+            repo_root=repo_root,
+            entries=entries,
+            extra_set=item.extra_set,
+            model_ref=item.model,
+            require_model=item.model is not None,
+        )
+        if resolved.kind == "eval" and not item.model:
+            raise UsageError(f"eval spec {resolved.spec_path} requires a model reference")
+        if resolved.kind != "train":
+            for number in attempts_of(resolved.fingerprint):
+                add(f"{resolved.fingerprint}-a{number}")
+            continue
+        eval_paths = list(item.evals) if item.evals is not None else list(resolved.evals)
+        for number in attempts_of(resolved.fingerprint):
+            run_id = f"{resolved.fingerprint}-a{number}"
+            add(run_id)
+            for rel in eval_paths:
+                child = resolve_spec(
+                    repo_root / rel,
+                    repo_root=repo_root,
+                    entries=entries,
+                    model_ref=f"run:{run_id}",
+                )
+                for child_number in attempts_of(child.fingerprint):
+                    add(f"{child.fingerprint}-a{child_number}")
+    return seen
 
 
 def _auto_tags(resolved: ResolvedSpec, cluster_name: str, attempt: int, user_tags: list[str]) -> list[str]:
@@ -173,6 +240,7 @@ def _job_from_resolved(
     wb_attempts: dict[int, str],
     scheduler_state: str | None,
     wandb_state: str | None,
+    spec_env: dict[str, str],
 ) -> Job:
     attempt = decision.attempt
     run_id = f"{resolved.fingerprint}-a{attempt}"
@@ -193,6 +261,7 @@ def _job_from_resolved(
         fingerprint=resolved.fingerprint,
         attempt=attempt,
         kind=resolved.kind,
+        cluster=cluster.name,
         entry=resolved.entry,
         spec_path=resolved.spec_path,
         stem=resolved.stem,
@@ -211,6 +280,7 @@ def _job_from_resolved(
         command=render_command(entry.cmd, run_dir=run_dir, params=resolved.params),
         parser=entry.parser,
         entry_env=dict(entry.env),
+        spec_env=dict(spec_env),
         tags=tags,
         group=group,
         decision=decision.action,
@@ -218,6 +288,14 @@ def _job_from_resolved(
         wandb_state=wandb_state,
         scheduler_state=scheduler_state,
     )
+
+
+def _merged_env(resolved: ResolvedSpec, item: _Item) -> dict[str, str]:
+    """Spec env, then the experiment run's env. Not part of the fingerprint."""
+    merged = dict(resolved.env)
+    if item.env:
+        merged.update(item.env)
+    return merged
 
 
 def build_jobs(
@@ -237,7 +315,7 @@ def build_jobs(
     cache: Cache | None = None,
     probe: Probe,
     run_state: RunState,
-    qstat: dict[str, str] | None = None,
+    scheduler_states: SchedulerStates | None = None,
 ) -> list[Job]:
     """Resolve, expand, dedup, and reconcile. Does not touch a cluster filesystem."""
     if no_evals and evals_override is not None:
@@ -247,6 +325,11 @@ def build_jobs(
     user_tags = list(tags or [])
     probe_cache: dict[str, dict[int, str]] = {}
     state_cache: dict[str, str | None] = {}
+
+    def states_of(cluster_name: str) -> dict[str, str] | None:
+        if scheduler_states is None:
+            return None
+        return scheduler_states(cluster_name)
 
     def cached_probe(fingerprint: str) -> dict[int, str]:
         if fingerprint not in probe_cache:
@@ -279,7 +362,7 @@ def build_jobs(
         ]
 
     # First pass: resolve trains (and remember standalone eval items).
-    trains: dict[str, tuple[ResolvedSpec, list[str], list[str]]] = {}
+    trains: dict[str, tuple[ResolvedSpec, list[str], list[str], dict[str, str]]] = {}
     train_order: list[str] = []
     standalone: list[_Item] = []
     for item in items:
@@ -299,7 +382,7 @@ def build_jobs(
             raise UsageError("train spec does not take a model reference")
         if resolved.kind == "eval" and not item.model:
             raise UsageError(f"eval spec {resolved.spec_path} requires a model reference")
-        validate_resources(resolved.resources, cluster.header)
+        backend_for(cluster).validate_resources(resolved.resources, cluster)
         if resolved.kind == "train":
             eval_paths = list(resolved.evals)
             if item.evals is not None:
@@ -308,25 +391,30 @@ def build_jobs(
                 eval_paths = list(evals_override)
             if no_evals:
                 eval_paths = []
+            spec_env = _merged_env(resolved, item)
             bucket = trains.get(resolved.fingerprint)
             if bucket is None:
-                trains[resolved.fingerprint] = (resolved, eval_paths, list(item.tags))
+                trains[resolved.fingerprint] = (resolved, eval_paths, list(item.tags), spec_env)
                 train_order.append(resolved.fingerprint)
             else:
-                existing, paths, existing_tags = bucket
+                existing, paths, existing_tags, existing_env = bucket
+                if spec_env != existing_env:
+                    raise UsageError(
+                        f"fingerprint {resolved.fingerprint} comes from runs with different env values"
+                    )
                 for rel in eval_paths:
                     if rel not in paths:
                         paths.append(rel)
                 for tag in item.tags:
                     if tag not in existing_tags:
                         existing_tags.append(tag)
-                trains[resolved.fingerprint] = (existing, paths, existing_tags)
+                trains[resolved.fingerprint] = (existing, paths, existing_tags, existing_env)
         else:
             standalone.append(item)
 
     def reconcile(resolved: ResolvedSpec, *, item_force: bool) -> tuple[Decision, dict[int, str], str | None, str | None]:
         wb_attempts = cached_probe(resolved.fingerprint)
-        views = attempt_views(wb_attempts, cache.for_fingerprint(resolved.fingerprint), qstat)
+        views = attempt_views(wb_attempts, cache.for_fingerprint(resolved.fingerprint), states_of)
         decision = decide(views, force=item_force)
         current = next((view for view in views if view.attempt == decision.attempt), None)
         # For a brand new submit there is no view at that attempt.
@@ -342,7 +430,7 @@ def build_jobs(
 
     train_jobs: dict[str, Job] = {}
     for fingerprint in train_order:
-        resolved, _paths, item_tags = trains[fingerprint]
+        resolved, _paths, item_tags, spec_env = trains[fingerprint]
         decision, wb_attempts, wandb_state, sched = reconcile(resolved, item_force=force)
         train_jobs[fingerprint] = _job_from_resolved(
             resolved,
@@ -354,18 +442,23 @@ def build_jobs(
             wb_attempts=wb_attempts,
             scheduler_state=sched,
             wandb_state=wandb_state if decision.action == "skip" else None,
+            spec_env=spec_env,
         )
 
-    eval_resolved: list[tuple[ResolvedSpec, list[str], Decision]] = []
+    eval_resolved: list[tuple[ResolvedSpec, list[str], Decision, dict[str, str]]] = []
 
-    def add_eval(resolved: ResolvedSpec, item_tags: list[str]) -> None:
+    def add_eval(resolved: ResolvedSpec, item_tags: list[str], spec_env: dict[str, str]) -> None:
         # Dedup by fingerprint, union tags onto the first copy.
-        for index, (existing, tags_so_far, _decision) in enumerate(eval_resolved):
+        for index, (existing, tags_so_far, _decision, existing_env) in enumerate(eval_resolved):
             if existing.fingerprint == resolved.fingerprint:
+                if spec_env != existing_env:
+                    raise UsageError(
+                        f"fingerprint {resolved.fingerprint} comes from runs with different env values"
+                    )
                 for tag in item_tags:
                     if tag not in tags_so_far:
                         tags_so_far.append(tag)
-                eval_resolved[index] = (existing, tags_so_far, _decision)
+                eval_resolved[index] = (existing, tags_so_far, _decision, existing_env)
                 return
         decision, _wb, _state, _sched = reconcile(resolved, item_force=force)
         if resolved.model is not None and resolved.model.upstream_run_id:
@@ -374,14 +467,15 @@ def build_jobs(
                 train_jobs,
                 cached_state,
                 cache,
-                qstat,
+                states_of,
+                cluster.name,
             )
             if decision.action == "submit" and not upstream_allows(upstream):
                 decision = Decision("skip", decision.attempt, "upstream-not-available")
-        eval_resolved.append((resolved, item_tags, decision))
+        eval_resolved.append((resolved, item_tags, decision, spec_env))
 
     for fingerprint in train_order:
-        resolved, paths, item_tags = trains[fingerprint]
+        resolved, paths, item_tags, _spec_env = trains[fingerprint]
         parent = train_jobs[fingerprint]
         for rel in paths:
             child = resolve_spec(
@@ -403,8 +497,8 @@ def build_jobs(
                 # Handle is not part of the fingerprint; canonical model ref is.
                 # Recompute only if we changed the canonical form (we did not).
                 assert child_input["model_ref"] == child.fingerprint_input["model_ref"]
-            validate_resources(child.resources, cluster.header)
-            add_eval(child, list(item_tags))
+            backend_for(cluster).validate_resources(child.resources, cluster)
+            add_eval(child, list(item_tags), dict(child.env))
 
     for item in standalone:
         resolved = resolve_spec(
@@ -416,8 +510,8 @@ def build_jobs(
             model_ref=item.model,
             lookup=lookup,
         )
-        validate_resources(resolved.resources, cluster.header)
-        add_eval(resolved, list(item.tags))
+        backend_for(cluster).validate_resources(resolved.resources, cluster)
+        add_eval(resolved, list(item.tags), _merged_env(resolved, item))
 
     jobs: list[Job] = []
     emitted_trains: set[str] = set()
@@ -425,9 +519,9 @@ def build_jobs(
     # standalone evals where they were declared. Deduped evals stay at the
     # first position.
     eval_jobs = []
-    for resolved, item_tags, decision in eval_resolved:
+    for resolved, item_tags, decision, spec_env in eval_resolved:
         wb_attempts = cached_probe(resolved.fingerprint)
-        views = attempt_views(wb_attempts, cache.for_fingerprint(resolved.fingerprint), qstat)
+        views = attempt_views(wb_attempts, cache.for_fingerprint(resolved.fingerprint), states_of)
         current = next((view for view in views if view.attempt == decision.attempt), None)
         sched = None if current is None else current.scheduler_state
         wandb_state = wb_attempts.get(decision.attempt) if decision.action == "skip" else None
@@ -444,6 +538,7 @@ def build_jobs(
                 wb_attempts=wb_attempts,
                 scheduler_state=sched,
                 wandb_state=wandb_state,
+                spec_env=spec_env,
             )
         )
 
@@ -472,20 +567,30 @@ def _upstream_decision(
     train_jobs: dict[str, Job],
     run_state: RunState,
     cache: Cache,
-    qstat: dict[str, str] | None,
+    states: SchedulerStates,
+    target: str,
 ) -> Decision:
+    """An in-flight upstream only counts when it is on the cluster being planned."""
     for job in train_jobs.values():
-        if job.run_id == run_id:
-            return Decision(job.decision, job.attempt, job.reason)
+        if job.run_id != run_id:
+            continue
+        if job.decision == "skip" and job.reason in {"running", "pending"}:
+            cached = cache.by_run_id(run_id)
+            if cached is None or cached.cluster != target:
+                return Decision("skip", job.attempt, "unavailable")
+        return Decision(job.decision, job.attempt, job.reason)
     cached = cache.by_run_id(run_id)
     state = run_state(run_id)
+    attempt = _attempt_of(run_id)
+    on_target = cached is not None and cached.cluster == target
     if state == "finished":
-        return Decision("skip", _attempt_of(run_id), "finished")
-    if state == "running" or (cached is not None and _cached_in_flight(cached, qstat)):
-        return Decision("skip", _attempt_of(run_id), "running" if state == "running" else "pending")
+        return Decision("skip", attempt, "finished")
+    if on_target and (state == "running" or _cached_in_flight(cached, states)):
+        reason = "running" if state == "running" else "pending"
+        return Decision("skip", attempt, reason)
     if state in {"failed", "crashed", "killed"}:
-        return Decision("skip", _attempt_of(run_id), state)
-    return Decision("skip", _attempt_of(run_id), "unavailable")
+        return Decision("skip", attempt, state)
+    return Decision("skip", attempt, "unavailable")
 
 
 def _attempt_of(run_id: str) -> int:
@@ -493,10 +598,11 @@ def _attempt_of(run_id: str) -> int:
     return int(suffix) if suffix.isdigit() else 1
 
 
-def _cached_in_flight(entry: Any, qstat: dict[str, str] | None) -> bool:
-    if qstat is None:
+def _cached_in_flight(entry: Any, states: SchedulerStates) -> bool:
+    mapping = states(entry.cluster)
+    if mapping is None:
         return True
-    return qstat.get(entry.scheduler_id, "gone") in {"queued", "running", "unknown"}
+    return mapping.get(entry.scheduler_id, "gone") in {"queued", "running", "unknown"}
 
 
 def retarget_eval(job: Job, *, run_id: str, handle: str) -> None:
