@@ -58,11 +58,19 @@ class SSH:
             timeout=30,
             key_filename=key_filename,
         )
-        if proxy_command:
-            common["sock"] = paramiko.ProxyCommand(proxy_command)
+
+        def with_sock() -> dict:
+            # A ProxyCommand pipe is one SSH session. The password retry has to
+            # open another; reusing the first pipe hangs waiting for a banner.
+            kwargs = dict(common)
+            if proxy_command:
+                kwargs["sock"] = paramiko.ProxyCommand(proxy_command)
+            return kwargs
+
         try:
-            client.connect(**common, allow_agent=True, look_for_keys=True)
+            client.connect(**with_sock(), allow_agent=True, look_for_keys=True)
         except Exception as key_error:
+            client.close()
             password = os.environ.get(self.password_env) if self.password_env else None
             if not password:
                 if not sys.stdin.isatty():
@@ -75,12 +83,13 @@ class SSH:
                 password = getpass.getpass(f"Password for {username or ''}@{hostname}: ")
             try:
                 client.connect(
-                    **common,
+                    **with_sock(),
                     password=password,
                     allow_agent=False,
                     look_for_keys=False,
                 )
             except Exception as exc:
+                client.close()
                 raise UsageError(f"could not SSH to {self.alias}: {exc}") from exc
         transport = client.get_transport()
         if transport is not None:
