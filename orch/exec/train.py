@@ -9,6 +9,7 @@ from orch.exec.common import (
     init_run,
     now,
     read_job,
+    release_wandb,
     save_files,
     tee_subprocess,
     update_config,
@@ -33,6 +34,9 @@ def execute(run_dir: Path) -> int:
     run, run_dir = init_run(job, run_dir)
     update_config(run, job, state="running")
     run.finish()
+    # The trainer resumes this run from its own process. The service that
+    # served the prologue still owns the run id until it is shut down.
+    release_wandb(wandb)
     code = tee_subprocess(
         job["command"],
         cwd=job["cluster"]["src_dir"],

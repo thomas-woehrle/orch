@@ -70,8 +70,10 @@ def _upstream_ready(job: dict) -> tuple[bool, str, object | None]:
     except Exception as exc:
         return False, f"missing ({exc})", None
     artifacts = [item for item in producer.logged_artifacts() if item.type == "model"]
-    if producer.state != "finished" or not artifacts:
+    if producer.state != "finished":
         return False, producer.state, None
+    if not artifacts:
+        return False, "no-model-artifact", None
     return True, producer.state, producer
 
 
@@ -79,10 +81,17 @@ def execute(run_dir: Path) -> int:
     job = read_job(run_dir)
     ready, state, producer = _upstream_ready(job)
     if not ready:
-        print(
-            f"upstream {job.get('upstream_run_id')} not finished (state={state}); "
-            "exiting without creating a run"
-        )
+        upstream = job.get("upstream_run_id")
+        if state == "no-model-artifact":
+            print(
+                f"upstream {upstream} finished but has no model artifact; "
+                "exiting without creating a run"
+            )
+        else:
+            print(
+                f"upstream {upstream} not finished (state={state}); "
+                "exiting without creating a run"
+            )
         return 0
     (run_dir / "output").mkdir(parents=True, exist_ok=True)
     (run_dir / "wandb").mkdir(parents=True, exist_ok=True)

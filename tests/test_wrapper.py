@@ -141,6 +141,9 @@ def _install_wandb(monkeypatch, events, *, fail_first=False):
         def Api(self):
             return Api()
 
+        def teardown(self):
+            events.append("teardown")
+
     wandb = Wandb()
     wandb.Artifact = Artifact
     monkeypatch.setitem(sys.modules, "wandb", wandb)
@@ -170,13 +173,14 @@ def test_train_prologue_precedes_the_script(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("orch.exec.train.tee_subprocess", script)
     assert execute_train(run_dir) == 0
-    assert events[:4] == [
+    assert events[:5] == [
         ("init", "aaaaaaaaaaaa-a1"),
         ("config", "running", None),
         ("finish", "running", None),
+        "teardown",
         "script",
     ]
-    assert events[4][0] == "init"
+    assert events[5][0] == "init"
     assert ("config", "succeeded", None) in events
     assert "artifact" in events
     assert events[-1] == ("finish", "succeeded", 0)

@@ -73,7 +73,23 @@ def child_env(job: dict[str, Any]) -> dict[str, str]:
     if venv_python:
         bin_dir = str(Path(venv_python).parent)
         env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+    # The wrapper's own wandb service must not be inherited. The script starts
+    # its own, and the wrapper opens the run again after the script exits.
+    env.pop("WANDB_SERVICE", None)
     return env
+
+
+def release_wandb(wandb) -> None:
+    """Drop the local wandb service so this process can open the same run again.
+
+    ``wandb-core`` keeps a run id after ``finish()``. A second ``init`` in the
+    same process then fails with ``run ID … is in use``.
+    """
+    os.environ.pop("WANDB_SERVICE", None)
+    teardown = getattr(wandb, "teardown", None)
+    if teardown is not None:
+        teardown()
+    os.environ.pop("WANDB_SERVICE", None)
 
 
 def _collision(exc: Exception) -> bool:

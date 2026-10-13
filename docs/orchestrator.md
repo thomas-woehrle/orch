@@ -1207,9 +1207,11 @@ having two writers on the run at once (decision 7):
 ### 6.6 `orch exec` — eval
 
 1. Read `job.json`. If `upstream_run_id` is set: fetch that run via the API.
-   If its state is not `finished` or it has no `model` artifact, print
-   `upstream <id> not finished (state=…); exiting without creating a run` and
-   exit 0. No W&B run is created (F1 exception); the next `orch run` will plan
+   If its state is not `finished`, print
+   `upstream <id> not finished (state=…); exiting without creating a run`.
+   If it is `finished` but has no `model` artifact, print
+   `upstream <id> finished but has no model artifact; exiting without creating a run`.
+   Either way exit 0. No W&B run is created (F1 exception); the next `orch run` will plan
    a new eval against whichever attempt succeeds. Keep the fetched producer
    run object for step 2.
 2. `wandb.init(id=run_id, …, job_type="eval")`, then
