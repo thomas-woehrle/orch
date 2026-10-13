@@ -1,8 +1,10 @@
 """Cluster entries in orch.local.yaml."""
 
+from pathlib import Path
+
 import pytest
 
-from orch.config import _load_cluster
+from orch.config import _load_cluster, load_orch
 from orch.conn import Local
 from orch.errors import UsageError
 
@@ -65,6 +67,30 @@ def test_local_cluster_takes_devices_and_refuses_ssh():
             "local",
             {"backend": "local", "repo_dir": "/repo", "work_dir": "/work", "devices": []},
         )
+
+
+def test_train_artifact_defaults_true_and_sequential_opts_out():
+    root = Path(__file__).resolve().parents[1]
+    entries = load_orch(root).entries
+    assert entries["train"].artifact is True
+    assert entries["sequential_train"].artifact is False
+    assert entries["tooluse_eval"].artifact is True
+
+
+def test_eval_entry_rejects_artifact_flag(tmp_path: Path):
+    (tmp_path / "orch.yaml").write_text(
+        """\
+version: 1
+entries:
+  tooluse_eval:
+    kind: eval
+    cmd: "python eval_tooluse.py"
+    parser: "orch_adapters:parse_eval_results"
+    artifact: false
+"""
+    )
+    with pytest.raises(UsageError, match="artifact is only valid on train entries"):
+        load_orch(tmp_path)
 
 
 def test_local_conn_round_trip(tmp_path):

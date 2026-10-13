@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from orch.errors import UsageError
-from orch.modelref import resolve_model_ref
+from orch.modelref import require_eval_model_artifact, resolve_model_ref
 
 
 class FakeLookup:
@@ -58,6 +58,31 @@ def test_fingerprint_and_artifact_need_lookup():
     aliased = resolve_model_ref("artifact:e/p/model-abc:latest", FakeLookup())
     assert aliased.canonical == "artifact:e/p/model-abc:v4"
     assert aliased.upstream_run_id is None
+
+
+class ArtifactLookup(FakeLookup):
+    def __init__(self) -> None:
+        super().__init__()
+        self.models = {"abc123abc123-a2"}
+        self.artifacts = {"e/p/model-abc:v4"}
+
+    def has_model_artifact(self, run_id: str) -> bool:
+        return run_id in self.models
+
+    def artifact_exists(self, name: str) -> bool:
+        return name in self.artifacts
+
+
+def test_eval_requires_a_logged_model_artifact():
+    require_eval_model_artifact("hf:Qwen/Qwen2.5-1.5B-Instruct", None)
+    lookup = ArtifactLookup()
+    require_eval_model_artifact("run:abc123abc123-a2", lookup)
+    require_eval_model_artifact("fingerprint:abc123abc123", lookup)
+    require_eval_model_artifact("artifact:e/p/model-abc:latest", lookup)
+    with pytest.raises(UsageError, match="no model artifact"):
+        require_eval_model_artifact("run:abc123abc123-a1", lookup)
+    with pytest.raises(UsageError, match="does not exist"):
+        require_eval_model_artifact("artifact:e/p/model-abc:v3", lookup)
 
 
 def test_bad_forms():

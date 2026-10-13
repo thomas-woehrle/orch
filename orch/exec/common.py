@@ -163,6 +163,7 @@ def orch_config(job: dict[str, Any], *, extra: dict[str, Any] | None = None) -> 
         "overrides": job.get("overrides", []),
         "model_ref": job.get("model_ref"),
         "upstream_run_id": job.get("upstream_run_id"),
+        "artifact": job.get("artifact", True),
         "cluster": {
             key: job.get("cluster", {}).get(key)
             for key in ("name", "backend", "repo_dir", "work_dir", "src_dir", "device")

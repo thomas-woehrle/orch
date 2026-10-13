@@ -209,11 +209,19 @@ def eval_cmd(
     """Submit one evaluation. Equivalent to ``orch run <eval-spec> --model REF``."""
     del set_, param, resource
     from orch.driver import execute_run, format_report
+    from orch.modelref import require_eval_model_artifact
 
     try:
+        repo_root = find_repo_root()
+        lookup = None
+        if not model.startswith("hf:"):
+            from orch.wb import WandbLookup
+
+            lookup = WandbLookup.from_repo(repo_root)
+        require_eval_model_artifact(model, lookup)
         rows = execute_run(
             target,
-            repo_root=find_repo_root(),
+            repo_root=repo_root,
             cluster_name=cluster,
             model_ref=model,
             tags=tag,

@@ -17,6 +17,9 @@ class Entry:
     cmd: str
     parser: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    # Train entries upload a model artifact unless this is false. Eval entries
+    # leave it true; setting the key on an eval entry is an error.
+    artifact: bool = True
 
 
 @dataclass
@@ -101,8 +104,16 @@ def load_orch(repo_root: Path) -> OrchConfig:
         if parser is not None and not isinstance(parser, str):
             raise UsageError(f"entry {name}: parser must be a string")
         env = _string_map(body.get("env", {}), f"entry {name} env")
+        if "artifact" in body:
+            if kind != "train":
+                raise UsageError(f"entry {name}: artifact is only valid on train entries")
+            artifact = body["artifact"]
+            if not isinstance(artifact, bool):
+                raise UsageError(f"entry {name}: artifact must be a boolean")
+        else:
+            artifact = True
         entries[str(name)] = Entry(
-            name=str(name), kind=kind, cmd=cmd, parser=parser, env=env
+            name=str(name), kind=kind, cmd=cmd, parser=parser, env=env, artifact=artifact
         )
     return OrchConfig(version=1, entries=entries)
 

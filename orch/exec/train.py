@@ -45,15 +45,16 @@ def execute(run_dir: Path) -> int:
     )
     run, run_dir = init_run(job, run_dir)
     model_dir = run_dir / "model"
+    uploads_artifact = job.get("artifact", True)
     try:
-        ready = code == 0 and model_ready(model_dir)
+        ready = code == 0 and (model_ready(model_dir) if uploads_artifact else True)
         update_config(
             run,
             job,
             state="succeeded" if ready else "failed",
             extra={"ended_at": now()},
         )
-        if ready:
+        if ready and uploads_artifact:
             artifact = wandb.Artifact(
                 name=f"model-{job['fingerprint']}",
                 type="model",
@@ -76,7 +77,7 @@ def execute(run_dir: Path) -> int:
             artifact.add_dir(str(model_dir))
             logged = run.log_artifact(artifact, aliases=[f"a{job['attempt']}", "latest"])
             logged.wait()
-        else:
+        elif not ready:
             run.tags = list(run.tags) + ["failed"]
             run.summary["orch/exit_code"] = code
             if code == 0:

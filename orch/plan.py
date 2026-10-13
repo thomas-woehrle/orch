@@ -58,6 +58,7 @@ class Job:
     hold_on: list[str] = field(default_factory=list)
     wandb_state: str | None = None
     scheduler_state: str | None = None
+    artifact: bool = True
 
     def row(self, *, entity: str, project: str) -> dict[str, Any]:
         url = f"https://wandb.ai/{entity}/{project}/runs/{self.run_id}"
@@ -287,6 +288,7 @@ def _job_from_resolved(
         reason=decision.reason,
         wandb_state=wandb_state,
         scheduler_state=scheduler_state,
+        artifact=entry.artifact,
     )
 
 
@@ -391,6 +393,10 @@ def build_jobs(
                 eval_paths = list(evals_override)
             if no_evals:
                 eval_paths = []
+            if eval_paths and not entries[resolved.entry].artifact:
+                raise UsageError(
+                    f"entry {resolved.entry!r} does not upload a model artifact and cannot schedule evals"
+                )
             spec_env = _merged_env(resolved, item)
             bucket = trains.get(resolved.fingerprint)
             if bucket is None:

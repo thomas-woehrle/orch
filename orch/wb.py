@@ -53,6 +53,22 @@ class WandbLookup:
             return None
         return run.name
 
+    def has_model_artifact(self, run_id: str) -> bool:
+        run = self.run(run_id)
+        if run is None:
+            return False
+        return any(item.type == "model" for item in run.logged_artifacts())
+
+    def artifact_exists(self, name: str) -> bool:
+        try:
+            self.api().artifact(name)
+        except Exception as exc:
+            text = str(exc).lower()
+            if "could not find" in text or "not found" in text or "404" in text:
+                return False
+            raise
+        return True
+
     def probe_attempts(self, fingerprint: str) -> dict[int, str]:
         found: dict[int, str] = {}
         attempt = 1

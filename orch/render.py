@@ -272,6 +272,7 @@ def job_document(
         "overrides": list(job.overrides),
         "model_ref": job.model_ref,
         "upstream_run_id": job.upstream_run_id,
+        "artifact": getattr(job, "artifact", True),
         "wandb": {
             "entity": entity,
             "project": project,

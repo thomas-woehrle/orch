@@ -186,6 +186,34 @@ def test_train_prologue_precedes_the_script(tmp_path: Path, monkeypatch):
     assert events[-1] == ("finish", "succeeded", 0)
 
 
+def test_artifact_false_succeeds_without_a_model(tmp_path: Path, monkeypatch):
+    events: list = []
+    state = _install_wandb(monkeypatch, events)
+    run_dir = tmp_path / "aaaaaaaaaaaa-a1"
+    _write_job(run_dir, artifact=False)
+
+    monkeypatch.setattr("orch.exec.train.tee_subprocess", lambda *args, **kwargs: 0)
+    assert execute_train(run_dir) == 0
+    assert "artifact" not in events
+    assert ("config", "succeeded", None) in events
+    assert state["run"].config["orch"]["artifact"] is False
+    assert events[-1] == ("finish", "succeeded", 0)
+
+
+def test_missing_artifact_field_still_requires_a_model(tmp_path: Path, monkeypatch):
+    events: list = []
+    state = _install_wandb(monkeypatch, events)
+    run_dir = tmp_path / "aaaaaaaaaaaa-a1"
+    _write_job(run_dir)
+
+    monkeypatch.setattr("orch.exec.train.tee_subprocess", lambda *args, **kwargs: 0)
+    assert execute_train(run_dir) == 0
+    assert "artifact" not in events
+    assert ("config", "failed", None) in events
+    assert state["run"].summary["orch/failure_reason"] == "model_dir_missing"
+    assert state["run"].config["orch"]["artifact"] is True
+
+
 def test_deleted_run_id_bumps_before_the_script(tmp_path: Path, monkeypatch):
     events: list = []
     seen: dict = {}

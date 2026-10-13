@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from orch.errors import UsageError
 
@@ -46,6 +46,28 @@ def _artifact_parts(body: str) -> tuple[str, str, str, str]:
             f"artifact reference must be entity/project/name:version, got {body!r}"
         )
     return parts[0], parts[1], parts[2], version
+
+
+def require_eval_model_artifact(model: str, lookup: Any) -> None:
+    """Refuse ``orch eval`` when the named model artifact is not already logged.
+
+    ``hf:`` is a hub repo, so there is nothing to look up. ``run:`` and
+    ``fingerprint:`` must already have a model artifact. A train that is still
+    queued or running is refused here; child evals submitted with a train by
+    ``orch run`` do not call this.
+    """
+    if model.startswith("hf:"):
+        return
+    if lookup is None:
+        raise UsageError("checking the model artifact needs a W&B lookup")
+    resolved = resolve_model_ref(model, lookup)
+    if resolved.form == "artifact":
+        name = resolved.canonical[len("artifact:") :]
+        if not lookup.artifact_exists(name):
+            raise UsageError(f"{resolved.canonical} does not exist")
+        return
+    if resolved.upstream_run_id is None or not lookup.has_model_artifact(resolved.upstream_run_id):
+        raise UsageError(f"{model} has no model artifact")
 
 
 def resolve_model_ref(raw: str, lookup: ModelLookup | None = None) -> ModelResolution:
