@@ -106,18 +106,29 @@ def test_sequential_train_has_no_child_evals():
 def test_sequential_experiment_is_two_trains_without_evals():
     root = Path(__file__).resolve().parents[1]
     jobs = _build(root, "experiments/sequential_tooluse_science.yaml")
-    assert [job.kind for job in jobs] == ["train", "train"]
-    assert {job.params["method"] for job in jobs} == {"sdft"}
+    assert [job.kind for job in jobs] == ["train", "train", "train", "train"]
+    assert {job.params["method"] for job in jobs} == {"sdft", "sft"}
     assert all(job.artifact is False for job in jobs)
     assert {job.params["model_name"] for job in jobs} == {
         "Qwen/Qwen2.5-1.5B-Instruct",
         "Qwen/Qwen2.5-3B-Instruct",
     }
     assert {job.params["per_device_eval_batch_size"] for job in jobs} == {16, 4}
-    large = next(job for job in jobs if job.params["model_name"] == "Qwen/Qwen2.5-3B-Instruct")
-    assert large.params["gradient_accumulation_steps"] == 16
-    assert large.params["steps_per_generation"] == 16
-    sdft = next(job for job in jobs if job.params["model_name"] == "Qwen/Qwen2.5-1.5B-Instruct")
+    large = [
+        job for job in jobs if job.params["model_name"] == "Qwen/Qwen2.5-3B-Instruct"
+    ]
+    assert {job.params["gradient_accumulation_steps"] for job in large} == {16}
+    sdft_large = next(job for job in large if job.params["method"] == "sdft")
+    assert sdft_large.params["steps_per_generation"] == 16
+    assert "steps_per_generation" not in next(
+        job.params for job in large if job.params["method"] == "sft"
+    )
+    sdft = next(
+        job
+        for job in jobs
+        if job.params["method"] == "sdft"
+        and job.params["model_name"] == "Qwen/Qwen2.5-1.5B-Instruct"
+    )
     assert [phase["name"] for phase in sdft.params["phases"]] == ["tooluse", "science"]
     assert sdft.params["phases"][1]["train_data"] == "data/science_data/train_data"
     assert sdft.params["eval_steps"] == 50
