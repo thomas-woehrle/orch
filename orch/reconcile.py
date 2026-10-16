@@ -27,7 +27,18 @@ class Decision:
 
 
 def decide(attempts: list[AttemptView], *, force: bool = False) -> Decision:
-    """Apply the §6.2 table to the highest attempt."""
+    """Apply the §6.2 table to the highest attempt.
+
+    ``force`` turns every skip of an existing attempt into a submit of the
+    next one. States that already submit the next attempt keep their reason.
+    """
+    decision = _decide(attempts)
+    if force and decision.action == "skip":
+        return Decision("submit", decision.attempt + 1, "force")
+    return decision
+
+
+def _decide(attempts: list[AttemptView]) -> Decision:
     if not attempts:
         return Decision("submit", 1, "new")
     latest = max(attempts, key=lambda item: item.attempt)
@@ -46,8 +57,6 @@ def decide(attempts: list[AttemptView], *, force: bool = False) -> Decision:
             return Decision("submit", number + 1, "crashed")
         return Decision("skip", number, "running")
     if wb == "finished":
-        if force:
-            return Decision("submit", number + 1, "force")
         return Decision("skip", number, "finished")
     if wb in ("failed", "crashed", "killed"):
         return Decision("submit", number + 1, wb)

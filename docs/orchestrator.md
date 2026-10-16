@@ -949,9 +949,15 @@ every cached attempt as `unknown`, which the table reads as still pending.
 | no attempts exist             | cache: gone               | submit `a2` (`a1` is considered burned)       |
 | `running`                     | queued/running or unknown | skip (running)                                |
 | `running`                     | gone                      | treat as crashed → submit next                |
-| `finished`                    | any                       | skip (finished); with `--force` → submit next |
+| `finished`                    | any                       | skip (finished)                               |
 | `failed`, `crashed`, `killed` | any                       | submit next                                   |
 | any open                      | error (SGE `Eqw`)         | skip (error); not auto-resubmitted            |
+
+`--force` submits the next attempt whenever this table would skip an existing
+one (`pending`, `running`, `finished`, `error`, or an unrecognized W&B
+state). The reason is `force`. The previous attempt is left as it is. Rows
+that already submit the next attempt keep their own reason. With no attempts,
+`--force` still submits `a1`.
 
 Identity is cluster-independent: a fingerprint that finished on eddie is
 `finished` when planned on `local`, and a fingerprint pending on dmog is

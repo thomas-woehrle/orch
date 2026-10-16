@@ -26,6 +26,27 @@ def test_decision_table():
     forced = decide([AttemptView(1, "finished", "gone")], force=True)
     assert (forced.action, forced.attempt, forced.reason) == ("submit", 2, "force")
 
+    for view in (
+        AttemptView(1, None, "queued"),
+        AttemptView(1, None, "running"),
+        AttemptView(2, "running", "queued"),
+        AttemptView(2, "running", None),
+        AttemptView(1, None, "error"),
+        AttemptView(1, "running", "error"),
+        AttemptView(1, "killed-by-user", "gone"),
+    ):
+        overridden = decide([view], force=True)
+        assert (overridden.action, overridden.attempt, overridden.reason) == (
+            "submit",
+            view.attempt + 1,
+            "force",
+        )
+
+    # States that already submit the next attempt keep their own reason.
+    still_failed = decide([AttemptView(1, "failed", "gone")], force=True)
+    assert (still_failed.action, still_failed.attempt, still_failed.reason) == ("submit", 2, "failed")
+    assert decide([], force=True).reason == "new"
+
     for state in ("failed", "crashed", "killed"):
         nxt = decide([AttemptView(1, state, "gone")])
         assert (nxt.action, nxt.attempt, nxt.reason) == ("submit", 2, state)
