@@ -11,13 +11,13 @@ from orch.resolve import resolve_spec
 
 # Locked against configs/train/sdft_tooluse.yaml. A change to the identity
 # scheme or to that spec's identity-bearing params fails this test.
-SDFT_TOOLUSE_FINGERPRINT = "944267f6c6fe"
+SDFT_TOOLUSE_FINGERPRINT = "d4542d4616e3"
 SDFT_TOOLUSE_CANONICAL = (
     '{"entry":"train","kind":"train","model_ref":null,"params":{"bf16":true,'
     '"disable_dropout":false,"distillation_alpha":0.0,"distillation_is_clip":null,'
     '"distillation_mode":"full_logits","dtype":"bfloat16","generate_from_teacher":false,'
     '"gradient_accumulation_steps":32,"learning_rate":5e-05,"lr_scheduler_type":"cosine",'
-    '"max_completion_length":2048,"max_grad_norm":1.0,"max_prompt_length":1024,'
+    '"max_completion_length":1024,"max_grad_norm":1.0,"max_prompt_length":1024,'
     '"method":"sdft","model_name":"Qwen/Qwen2.5-1.5B-Instruct","num_generations":1,'
     '"num_loss_tokens_to_skip":3,"num_train_epochs":2,"per_device_train_batch_size":1,'
     '"seed":42,"shuffle_dataset":true,"teacher_model_kind":"ema",'

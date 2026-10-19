@@ -442,7 +442,7 @@ runtime_keys: [batch_size]
 params:
   tasks: hellaswag,mmlu,truthfulqa,winogrande,humaneval,ifeval
   batch_size: auto
-  apply_chat_template: true
+  apply_chat_template: false
 resources: { gpus: 1, time: "06:00:00", mem: 32G }
 ```
 
@@ -509,7 +509,7 @@ per_device_train_batch_size: 1
 gradient_accumulation_steps: 32
 num_train_epochs: 2
 max_prompt_length: 1024
-max_completion_length: 2048
+max_completion_length: 1024
 num_generations: 1
 temperature: 1.0
 generate_from_teacher: false
