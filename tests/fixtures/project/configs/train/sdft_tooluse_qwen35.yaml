@@ -1,0 +1,10 @@
+# SDFT on the tool-use task with Qwen3.5.
+kind: train
+entry: train
+description: SDFT on the tool-use task with Qwen3.5, thinking off and top-k distillation.
+params: hparams/sdft_qwen35.yaml
+resources: {gpus: 1, time: "12:00:00", mem: 24G}
+evals:
+  - configs/eval/tooluse_thinking_off.yaml
+  - configs/eval/prior_tasks_thinking_off.yaml
+name_keys: {model: params.model_name, lr: params.learning_rate, bs: params.gradient_accumulation_steps}

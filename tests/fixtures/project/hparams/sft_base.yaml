@@ -1,0 +1,29 @@
+# Shared SFT hyperparameters. Single-task files add train_data, val_size,
+# and num_train_epochs. Sequential files add phases instead.
+# completion_only_loss and packing are identity-bearing: they change what the
+# loss is computed on. runtime_keys are technical knobs. An unclassified key
+# is identity-bearing on purpose.
+runtime_keys:
+  # Kernel and logging choices. They do not change the SFT update.
+  - use_liger_kernel
+  - per_device_eval_batch_size
+  - logging_steps
+
+method: sft
+model_name: Qwen/Qwen2.5-1.5B-Instruct
+dtype: bfloat16
+seed: 42
+bf16: true
+learning_rate: 5.0e-5
+warmup_steps: 0.1
+lr_scheduler_type: cosine
+weight_decay: 0.0
+max_grad_norm: 1.0
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 32
+max_length: 2048
+completion_only_loss: true
+packing: false
+use_liger_kernel: true
+per_device_eval_batch_size: 1
+logging_steps: 1

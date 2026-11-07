@@ -1,0 +1,17 @@
+# Qwen3.5 tool-use SDFT. Extends the paper defaults and overrides the edges
+# that change with this checkpoint. model_name is Qwen/Qwen3.5-4B; override it
+# for another size.
+extends: sdft_base.yaml
+model_name: Qwen/Qwen3.5-4B
+train_data: data/tooluse_data/train_data
+val_size: 0.05
+num_train_epochs: 2
+# Top-k is the SDFT default and avoids a full-vocab KL. The tail bucket keeps
+# the leftover mass, so the divergence still approximates the full vocabulary.
+# Liger only implements that full-vocab loss, so it has to be off here.
+distillation_mode: topk_logits
+distillation_topk: 100
+distillation_add_tail: true
+use_liger_kernel: false
+chat_template_kwargs:
+  enable_thinking: false

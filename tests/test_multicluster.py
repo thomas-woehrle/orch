@@ -11,7 +11,7 @@ from tests.test_plan import _build, cluster
 
 
 def test_attempt_queued_elsewhere_is_pending_and_blocks_evals():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     first = _build(root, "configs/train/sft_tooluse.yaml", no_evals=True)
     fingerprint = first[0].fingerprint
     cache = Cache(None)
@@ -46,7 +46,7 @@ def test_attempt_queued_elsewhere_is_pending_and_blocks_evals():
 
 
 def test_pending_on_the_target_cluster_still_plans_evals():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     first = _build(root, "configs/train/sft_tooluse.yaml", no_evals=True)
     fingerprint = first[0].fingerprint
     cache = Cache(None)
@@ -84,7 +84,7 @@ def test_dry_run_states_do_not_query():
 
 
 def test_existing_attempts_skip_the_attempt_that_would_be_submitted_next():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     fingerprint = _build(root, "configs/train/sft_tooluse.yaml", no_evals=True)[0].fingerprint
 
     def probe(fp: str) -> dict[int, str]:

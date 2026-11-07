@@ -8,8 +8,6 @@ from pathlib import Path
 
 from orch.errors import UsageError
 
-# Anything under ``orch/`` is protected, so both a module and the package
-# README are listed. A pattern that matches either is rejected.
 PROTECTED = (
     "pyproject.toml",
     "uv.lock",
@@ -17,8 +15,6 @@ PROTECTED = (
     "orch.yaml",
     "orch_adapters.py",
     ".orchignore",
-    "orch/__init__.py",
-    "orch/README.md",
 )
 
 

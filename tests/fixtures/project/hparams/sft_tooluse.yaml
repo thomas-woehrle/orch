@@ -1,0 +1,7 @@
+# Paper SFT configuration. Extends the base file so this name stays stable
+# even when the base defaults move. The dataset fields are specific to this
+# single-task run.
+extends: sft_base.yaml
+train_data: data/tooluse_data/train_data
+val_size: 0.05
+num_train_epochs: 2

@@ -1,0 +1,10 @@
+# SDFT on the tool-use task, paper defaults.
+kind: train
+entry: train
+description: SDFT on the tool-use task, paper defaults.
+params: hparams/sdft_tooluse.yaml
+resources: {gpus: 1, time: "12:00:00", mem: 24G}
+evals:
+  - configs/eval/tooluse.yaml
+  - configs/eval/prior_tasks.yaml
+name_keys: {model: params.model_name, lr: params.learning_rate, bs: params.gradient_accumulation_steps}

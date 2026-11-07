@@ -1,0 +1,7 @@
+# SFT on tool-use, then science, in one run. No model artifact is uploaded.
+kind: train
+entry: sequential_train
+description: SFT trained on tool-use then science.
+params: hparams/sequential_sft.yaml
+resources: {gpus: 1, time: "24:00:00", mem: 24G}
+name_keys: {model: params.model_name, lr: params.learning_rate, bs: params.gradient_accumulation_steps}

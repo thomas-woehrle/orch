@@ -1,0 +1,9 @@
+# Same suite as prior_tasks.yaml. Qwen3 and Qwen3.5 think by default once the
+# chat template is applied, so this passes enable_thinking=False through
+# lm_eval's model_args. The harness merges it with pretrained={model_path}.
+# prior_tasks.yaml now runs without the chat template, so this only matters
+# if apply_chat_template is set back on for a run.
+extends: prior_tasks.yaml
+description: Prior tasks from the paper's retention suite, thinking disabled.
+params:
+  model_args: enable_thinking=False

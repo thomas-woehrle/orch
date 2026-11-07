@@ -1,0 +1,32 @@
+[project]
+name = "orch"
+dynamic = ["version"]
+description = "Experiment orchestrator for training and evaluation jobs on SGE, Slurm, and local machines."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "jinja2>=3.1",
+    "paramiko>=3.5",
+    "ruamel.yaml>=0.18",
+    "typer>=0.12",
+    "wandb>=0.30.0",
+]
+
+[project.scripts]
+orch = "orch.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "orch/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["orch"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

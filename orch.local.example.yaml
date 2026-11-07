@@ -1,0 +1,83 @@
+# Copy to orch.local.yaml and edit. That file is gitignored.
+# Paths, the SSH alias, and the W&B entity belong to the operator, not the code.
+version: 1
+
+wandb:
+  # W&B entity that owns the project. WANDB_ENTITY overrides this.
+  entity: thomas-woehrle-team
+  # Project that holds every orch run. WANDB_PROJECT overrides this.
+  project: orch-exp
+
+# Cluster used when --cluster is omitted.
+default_cluster: eddie
+
+clusters:
+  eddie:
+    # sge, slurm, or local. See docs/orchestrator.md §4.2.
+    backend: sge
+    # Host alias from ~/.ssh/config. Keys are tried first.
+    ssh: eddie
+    # Environment variable holding the SSH password, used when keys fail.
+    # Omit the key to be prompted on a terminal. The API key is never stored here.
+    password_env: ORCH_EDDIE_PASSWORD
+    # Checkout root on the cluster. Worktrees live in <repo_dir>/.worktrees/<sha>.
+    repo_dir: /exports/eddie/scratch/s2865446/projects/sdft-exp
+    # Per-attempt run directories: <work_dir>/<fingerprint>-a<n>/.
+    work_dir: /exports/eddie/scratch/s2865446/orch
+    env:
+      # uv's cache. Must be on scratch; the login-node home quota is too small.
+      UV_CACHE_DIR: /exports/eddie/scratch/s2865446/.cache/uv
+      # Hugging Face cache shared by every job on this cluster.
+      HF_HOME: /exports/eddie/scratch/s2865446/.cache/hf
+    # Jinja template. Every key in a spec's resources must appear here.
+    # gpu_type is optional; the {% if %} keeps it out of the script when unset.
+    header: |
+      #$ -q gpu
+      #$ -l gpu={{ gpus }}
+      {% if gpu_type %}#$ -l {{ gpu_type }}=true{% endif %}
+      #$ -l h_rt={{ time }}
+      #$ -l h_rss={{ mem }}
+    # Shell run on the compute node before the wrapper. Module loads go here.
+    setup: |
+      . /etc/profile.d/modules.sh
+      module load cuda
+
+  dmog:
+    # Slurm. Paths are placeholders; compute nodes can reach W&B and Hugging Face.
+    backend: slurm
+    ssh: dmog
+    # Dmog login password, used when the key is rejected. The gateway password
+    # is not this variable; an existing ControlMaster socket covers that hop.
+    password_env: ORCH_DMOG_PASSWORD
+    repo_dir: /mnt/scratch/<user>/sdft-exp
+    work_dir: /mnt/scratch/<user>/orch
+    env:
+      # uv's cache and Python installs. Keep these on scratch; home quotas are too small.
+      UV_CACHE_DIR: /mnt/scratch/<user>/.cache/uv
+      UV_PYTHON_INSTALL_DIR: /mnt/scratch/<user>/.cache/uv-python
+      # Hugging Face and Triton caches shared by every job on this cluster.
+      HF_HOME: /mnt/scratch/<user>/.cache/hf
+      TRITON_CACHE_DIR: /mnt/scratch/<user>/.cache/triton
+      # W&B's own cache, separate from the per-attempt WANDB_DIR under work_dir.
+      WANDB_CACHE_DIR: /mnt/scratch/<user>/.cache/wandb
+      WANDB_DATA_DIR: /mnt/scratch/<user>/.cache/wandb
+    # gpu_type is not referenced: a spec that pins one fails validation here.
+    # time and mem are the canonical resource keys; Slurm sees --time and --mem.
+    header: |
+      #SBATCH -p gpu
+      #SBATCH --gres=gpu:{{ gpus }}
+      #SBATCH --time={{ time }}
+      #SBATCH --mem={{ mem }}
+    setup: |
+      source "${flight_ROOT:-/opt/flight}"/etc/setup.sh
+
+  local:
+    # This machine. No ssh: commands run here. repo_dir is a separate clone,
+    # never the checkout orch is invoked from. One job claims one GPU.
+    backend: local
+    repo_dir: /localdisk/home/s2865446/orch/sdft-exp
+    work_dir: /localdisk/home/s2865446/orch/work
+    devices: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      HF_HOME: /localdisk/home/s2865446/.cache/hf
+    setup: ""

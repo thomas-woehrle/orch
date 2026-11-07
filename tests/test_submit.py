@@ -54,7 +54,7 @@ def _cluster() -> Cluster:
 
 
 def test_submit_trains_before_evals_and_holds():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     cluster = _cluster()
     jobs = build_jobs(
         repo_root=root,
@@ -103,7 +103,7 @@ def test_submit_trains_before_evals_and_holds():
 
 
 def test_ledger_bumps_attempt_when_run_dir_exists():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     cluster = _cluster()
     jobs = build_jobs(
         repo_root=root,

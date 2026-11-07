@@ -1,0 +1,19 @@
+# Sequential tool-use then science. Extends the shared SDFT defaults.
+# phases own the datasets and epoch counts.
+extends: sdft_base.yaml
+eval_steps: 50
+eval_on_start: true
+phases:
+  - name: tooluse
+    train_data: data/tooluse_data/train_data
+    num_train_epochs: 2
+  - name: science
+    train_data: data/science_data/train_data
+    num_train_epochs: 2
+eval_tasks:
+  - name: tooluse
+    data: data/tooluse_data/eval_data
+    score: tooluse
+  - name: science
+    data: data/science_data/eval_data
+    score: science

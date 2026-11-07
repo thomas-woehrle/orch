@@ -1,0 +1,7 @@
+# Tool-use test set. gpu_memory_utilization only affects vLLM's reservation.
+kind: eval
+entry: tooluse_eval
+description: Tool-use test set accuracy.
+runtime_keys: [gpu_memory_utilization]
+params: {max_new_tokens: 1024, temperature: 0.0, gpu_memory_utilization: 0.8}
+resources: {gpus: 1, time: "01:00:00", mem: 24G}

@@ -81,7 +81,7 @@ def test_unicode_round_trip_and_runtime_exclusion_and_model_ref():
 
 
 def test_committed_sdft_tooluse_fingerprint_is_stable():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     resolved = _resolve(root, "configs/train/sdft_tooluse.yaml")
     assert resolved.fingerprint_input["kind"] == "train"
     assert resolved.fingerprint_input["entry"] == "train"

@@ -45,7 +45,7 @@ def _build(root: Path, target: str, **kwargs):
 
 
 def test_dedup_unions_evals(tmp_path: Path):
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     experiment = tmp_path / "exp.yaml"
     experiment.write_text(
         """\
@@ -84,7 +84,7 @@ def _document(job):
 
 
 def test_tooluse_train_still_schedules_child_evals():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     jobs = _build(root, "configs/train/sft_tooluse.yaml")
     train = next(job for job in jobs if job.kind == "train")
     assert train.artifact is True
@@ -94,7 +94,7 @@ def test_tooluse_train_still_schedules_child_evals():
 
 
 def test_sequential_train_has_no_child_evals():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     jobs = _build(root, "configs/train/sequential_sdft.yaml")
     assert [job.kind for job in jobs] == ["train"]
     assert jobs[0].artifact is False
@@ -104,7 +104,7 @@ def test_sequential_train_has_no_child_evals():
 
 
 def test_sequential_experiment_is_two_trains_without_evals():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     jobs = _build(root, "experiments/sequential_tooluse_science.yaml")
     assert [job.kind for job in jobs] == ["train", "train", "train", "train"]
     assert {job.params["method"] for job in jobs} == {"sdft", "sft"}
@@ -135,7 +135,7 @@ def test_sequential_experiment_is_two_trains_without_evals():
 
 
 def test_artifact_false_rejects_attached_evals(tmp_path: Path):
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     with pytest.raises(UsageError, match="cannot schedule evals"):
         _build(
             root,
@@ -156,7 +156,7 @@ runs:
 
 
 def test_no_evals_and_finished_upstream_skips_resubmit():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     jobs = _build(root, "configs/train/sft_tooluse.yaml", no_evals=True)
     assert len(jobs) == 1
     assert jobs[0].kind == "train"

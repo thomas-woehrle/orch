@@ -6,6 +6,16 @@ Invoke `orch` from the repository root: `uv run orch …` or `.venv/bin/orch …
 
 ## Install and a first dry run
 
+Add `orch` to the project as a git dependency pinned to a tag. `uv.lock` records the commit, and the cluster installs the same one when it syncs:
+
+```bash
+uv add "orch @ git+https://github.com/thomas-woehrle/orch" --tag v0.2.0
+```
+
+To work on `orch` and a project together, point the project at a local checkout instead with `orch = { path = "../orch", editable = true }` under `[tool.uv.sources]`. Switch back to a tag before a real `orch run`, because the cluster does not have that path.
+
+The project needs an `orch.yaml`, an `orch_adapters.py` with the eval parsers, and an `orch.local.yaml` that stays untracked:
+
 ```bash
 uv sync
 cp orch.local.example.yaml orch.local.yaml
@@ -27,7 +37,7 @@ A dry run resolves the experiment, asks W&B which attempts already exist, and pr
 uv run orch run experiments/tooluse_main.yaml --dry-run
 ```
 
-A dry run does not need a clean or pushed tree. A real `orch run` does: the working tree must be clean and `HEAD` must already be on `origin`, because that SHA is what gets staged and recorded. Paths listed in `.orchignore` (gitignore syntax) are the exception: they are left out of the cluster worktree, so they may be dirty or untracked. The file itself must be committed and clean, and it must not match `pyproject.toml`, `uv.lock`, `README.md`, `orch.yaml`, `orch_adapters.py`, `.orchignore`, or anything under `orch/`. `--json` prints the same rows as JSON. Exit codes: `0` ok, `1` a bad spec or flag, `2` the tree or the cluster is not ready, `3` a remote step failed after something may already have been submitted.
+A dry run does not need a clean or pushed tree. A real `orch run` does: the working tree must be clean and `HEAD` must already be on `origin`, because that SHA is what gets staged and recorded. Paths listed in `.orchignore` (gitignore syntax) are the exception: they are left out of the cluster worktree, so they may be dirty or untracked. The file itself must be committed and clean, and it must not match `pyproject.toml`, `uv.lock`, `README.md`, `orch.yaml`, `orch_adapters.py`, or `.orchignore`. `--json` prints the same rows as JSON. Exit codes: `0` ok, `1` a bad spec or flag, `2` the tree or the cluster is not ready, `3` a remote step failed after something may already have been submitted.
 
 Choose a cluster with `--cluster`. The default is `default_cluster`.
 
@@ -129,7 +139,7 @@ An eval whose training run never reached `finished` exits without creating a W&B
 
 ## Where the results are
 
-Design notes for the W&B layout are in [docs/orchestrator.md](../docs/orchestrator.md) §7. The fields you filter and join on:
+Design notes for the W&B layout are in [docs/orchestrator.md](docs/orchestrator.md) §7. The fields you filter and join on:
 
 ```python
 import wandb

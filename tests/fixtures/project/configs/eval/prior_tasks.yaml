@@ -1,0 +1,12 @@
+# Prior-task suite (lm-eval). The chat template is off to match the authors'
+# lm_eval command, which the paper's prior-task numbers come from. batch_size
+# is a throughput knob.
+kind: eval
+entry: lm_eval
+description: Prior tasks from the paper's retention suite.
+runtime_keys: [batch_size]
+params:
+  tasks: hellaswag,mmlu,truthfulqa,winogrande,humaneval,ifeval
+  batch_size: auto
+  apply_chat_template: false
+resources: {gpus: 1, time: "06:00:00", mem: 32G}

@@ -1,0 +1,58 @@
+# Shared SDFT hyperparameters. Single-task files add train_data, val_size,
+# and num_train_epochs. Sequential files add phases instead.
+# runtime_keys are technical knobs: they change how a run fits on a GPU, not
+# the experiment identity. An unclassified key is identity-bearing on purpose.
+# steps_per_generation only changes generation chunking when it divides
+# gradient_accumulation_steps; do not raise it above that as a runtime override.
+runtime_keys:
+  - steps_per_generation
+  - vllm_mode
+  - vllm_gpu_memory_utilization
+  - vllm_enable_sleep_mode
+  - use_liger_kernel
+  - per_device_eval_batch_size
+  - logging_steps
+
+method: sdft
+model_name: Qwen/Qwen2.5-1.5B-Instruct
+dtype: bfloat16
+seed: 42
+bf16: true
+learning_rate: 5.0e-5
+warmup_steps: 0.1
+lr_scheduler_type: cosine
+weight_decay: 0.0
+max_grad_norm: 1.0
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 32
+max_prompt_length: 1024
+max_completion_length: 1024
+num_generations: 1
+temperature: 1.0
+generate_from_teacher: false
+teacher_model_kind: ema
+teacher_sync_steps: 1
+teacher_update_rate: 0.01
+distillation_mode: full_logits
+distillation_alpha: 0.0
+distillation_is_clip: null
+num_loss_tokens_to_skip: 3
+disable_dropout: false
+shuffle_dataset: true
+use_vllm: false
+teacher_prompt_template: |
+
+  {prompt}
+
+  This is an example for a response to the question:
+  {privileged_context}
+
+  Now answer with a response of your own, including the thinking process.
+
+steps_per_generation: 32
+vllm_mode: colocate
+vllm_gpu_memory_utilization: 0.3
+vllm_enable_sleep_mode: true
+use_liger_kernel: true
+per_device_eval_batch_size: 1
+logging_steps: 1

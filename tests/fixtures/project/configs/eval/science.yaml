@@ -1,0 +1,7 @@
+# Science test set. Same result file shape as the tool-use eval.
+kind: eval
+entry: science_eval
+description: Science test set accuracy.
+runtime_keys: [gpu_memory_utilization]
+params: {max_new_tokens: 2048, temperature: 0.0, gpu_memory_utilization: 0.8}
+resources: {gpus: 1, time: "02:00:00", mem: 24G}

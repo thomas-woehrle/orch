@@ -70,7 +70,7 @@ def test_local_cluster_takes_devices_and_refuses_ssh():
 
 
 def test_train_artifact_defaults_true_and_sequential_opts_out():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent / "fixtures" / "project"
     entries = load_orch(root).entries
     assert entries["train"].artifact is True
     assert entries["sequential_train"].artifact is False

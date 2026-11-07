@@ -1,0 +1,27 @@
+version: 1
+description: Sequential SDFT and SFT for 1.5B and 3B.
+runs:
+  - config: configs/train/sequential_sdft.yaml
+    set:
+      params.per_device_eval_batch_size: 16
+      resources.mem: 64G
+  - config: configs/train/sequential_sdft.yaml
+    set:
+      params.model_name: Qwen/Qwen2.5-3B-Instruct
+      params.gradient_accumulation_steps: 16
+      params.steps_per_generation: 16
+      params.per_device_eval_batch_size: 4
+      resources.mem: 64G
+      resources.time: "48:00:00"
+  - config: configs/train/sequential_sft.yaml
+    set:
+      params.per_device_eval_batch_size: 16
+      resources.mem: 64G
+  - config: configs/train/sequential_sft.yaml
+    set:
+      params.model_name: Qwen/Qwen2.5-3B-Instruct
+      params.gradient_accumulation_steps: 16
+      params.per_device_eval_batch_size: 4
+      resources.mem: 64G
+      resources.time: "48:00:00"
+tags: ["exp:sequential-tooluse-science"]
